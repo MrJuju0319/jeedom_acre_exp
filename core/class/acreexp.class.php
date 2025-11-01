@@ -14,6 +14,7 @@ class acreexp extends eqLogic {
     private const WATCHDOG_UNIT = '/etc/systemd/system/acre-exp-watchdog.service';
     private const WATCHDOG_BIN = '/usr/local/bin/acre_exp_watchdog.py';
     private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
+    private const WATCHDOG_CONFIG = '/etc/acre_exp/config.yml';
 
     /**
      * Retourne des informations sur le démon du plugin.
@@ -59,6 +60,7 @@ class acreexp extends eqLogic {
 
         $watchdogStarted = false;
         if (self::isWatchdogInstalled()) {
+            self::synchronizeWatchdogRefreshInterval();
             if ($_debug) {
                 log::add('acreexp', 'debug', __('Démarrage du service watchdog en mode debug', __FILE__));
             }
@@ -635,12 +637,61 @@ class acreexp extends eqLogic {
     }
 
     /**
+     * Synchronise l'intervalle de rafraîchissement du watchdog système avec la configuration du plugin.
+     */
+    private static function synchronizeWatchdogRefreshInterval() {
+        $configFile = self::WATCHDOG_CONFIG;
+        if (!is_file($configFile) || !is_readable($configFile) || !is_writable($configFile)) {
+            return;
+        }
+
+        $interval = max(1, (int)config::byKey('poll_interval', 'acreexp', 60));
+        $content = @file_get_contents($configFile);
+        if ($content === false) {
+            return;
+        }
+
+        $updated = false;
+        if (preg_match('/refresh_interval\s*:/', $content)) {
+            $replacement = 'refresh_interval: ' . $interval;
+            $count = 0;
+            $newContent = preg_replace('/refresh_interval\s*:\s*\d+/m', $replacement, $content, 1, $count);
+            if ($newContent !== null && $count > 0) {
+                $content = $newContent;
+                $updated = true;
+            }
+        }
+
+        if (!$updated) {
+            if (preg_match('/^watchdog:\s*$/m', $content)) {
+                $count = 0;
+                $content = preg_replace(
+                    '/^watchdog:\s*$/m',
+                    "watchdog:\n  refresh_interval: {$interval}",
+                    $content,
+                    1,
+                    $count
+                );
+                if ($count > 0) {
+                    $updated = true;
+                }
+            }
+        }
+
+        if (!$updated) {
+            $content = rtrim($content) . PHP_EOL . 'watchdog:' . PHP_EOL . '  refresh_interval: ' . $interval . PHP_EOL;
+        }
+
+        @file_put_contents($configFile, $content);
+    }
+
+    /**
      * Retourne le dossier resources du plugin.
      *
      * @return string
      */
     private static function getResourcesDirectory() {
-        return dirname(__DIR__, 2) . '/plugins/acreexp/resources';
+        return dirname(__DIR__, 2) . '/resources';
     }
 
     /**

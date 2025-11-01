@@ -12,10 +12,10 @@
   "hasDependency": true,
   "hasOwnDeamon": true,
   "maxDependancyInstallTime": 0,
-  "documentation": "plugins/acreexp/docs/fr_FR/index.md",
-  "documentation_beta": "plugins/acreexp/docs/fr_FR/index.md",
-  "changelog": "plugins/acreexp/docs/fr_FR/changelog.md",
-  "changelog_beta": "plugins/acreexp/docs/fr_FR/changelog_beta.md",
+  "documentation": "docs/fr_FR/index.md",
+  "documentation_beta": "docs/fr_FR/index.md",
+  "changelog": "docs/fr_FR/changelog.md",
+  "changelog_beta": "docs/fr_FR/changelog_beta.md",
   "language": [
     "fr_FR"
   ],
