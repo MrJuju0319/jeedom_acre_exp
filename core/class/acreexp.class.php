@@ -454,8 +454,8 @@ class acreexp extends eqLogic {
         }
         @file_put_contents($progress, '0');
 
-        $cmd = self::getSudoCmd() . 'ASSUME_YES=true /bin/bash ' . escapeshellarg($script)
-            . ' --install --progress-file ' . escapeshellarg($progress);
+        $cmd = self::getSudoCmd() . '/bin/bash ' . escapeshellarg($script)
+            . ' --progress-file ' . escapeshellarg($progress);
         $cmd .= ' >> ' . escapeshellarg($log) . ' 2>&1';
 
         return [$cmd];

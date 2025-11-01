@@ -1,21 +1,15 @@
 #!/bin/bash
+
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="/opt/spc-venv"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
-PROGRESS_FILE=""
+PROGRESS_FILE="${JEEDOM_DEPENDENCY_PROGRESS_FILE:-}"
 LOG_PREFIX="[acreexp][install]"
 
-show_help() {
-    cat <<'USAGE'
-Usage: install.sh --install [--progress-file <path>]
-       install.sh --remove [--progress-file <path>]
-USAGE
-}
-
 log() {
-    local level="$1"; shift || true
+    local level="$1"
+    shift || true
     echo "${LOG_PREFIX} ${level}: $*"
 }
 
@@ -26,89 +20,63 @@ update_progress() {
     fi
 }
 
-ensure_python() {
-    if [[ -n "${PYTHON_BIN}" && -x "${PYTHON_BIN}" ]]; then
-        return 0
-    fi
-    log "ERROR" "Python3 introuvable. Veuillez installer python3."
-    return 1
-}
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --progress-file)
+            shift
+            PROGRESS_FILE="${1:-}"
+            ;;
+        -p)
+            shift
+            PROGRESS_FILE="${1:-}"
+            ;;
+        --progress-file=*)
+            PROGRESS_FILE="${1#*=}"
+            ;;
+        *)
+            if [[ -z "${PROGRESS_FILE}" ]]; then
+                PROGRESS_FILE="$1"
+            fi
+            ;;
+    esac
+    shift || true
+done
 
-create_venv() {
-    update_progress 10
-    log "INFO" "Création / mise à jour de l'environnement virtuel ${VENV_DIR}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+    log "ERROR" "Python3 introuvable. Abandon."
+    exit 1
+fi
 
-    mkdir -p "${VENV_DIR}"
-    "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+log "INFO" "Initialisation de l'environnement Python (${VENV_DIR})"
+update_progress 5
 
-    source "${VENV_DIR}/bin/activate"
-    update_progress 40
+mkdir -p "${VENV_DIR}"
+"${PYTHON_BIN}" -m venv "${VENV_DIR}"
 
-    log "INFO" "Mise à jour de pip"
-    pip install --upgrade pip setuptools wheel >/dev/null
-    update_progress 60
+update_progress 25
 
-    log "INFO" "Installation des dépendances Python"
-    pip install --upgrade \
-        requests \
-        PyYAML \
-        beautifulsoup4 \
-        paho-mqtt >/dev/null
-    update_progress 90
+if [[ ! -x "${VENV_DIR}/bin/pip" ]]; then
+    log "ERROR" "pip introuvable dans l'environnement virtuel"
+    exit 1
+fi
 
-    deactivate || true
-    log "INFO" "Environnement virtuel prêt"
-}
+source "${VENV_DIR}/bin/activate"
 
-remove_venv() {
-    if [[ -d "${VENV_DIR}" ]]; then
-        log "INFO" "Suppression de l'environnement virtuel ${VENV_DIR}"
-        rm -rf "${VENV_DIR}"
-    else
-        log "INFO" "Aucun environnement virtuel à supprimer"
-    fi
-    update_progress 100
-}
+log "INFO" "Mise à jour de pip et des outils de build"
+"${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
+update_progress 55
 
-main() {
-    local action=""
+log "INFO" "Installation / mise à jour des dépendances Python"
+"${VENV_DIR}/bin/pip" install --upgrade \
+    requests \
+    PyYAML \
+    beautifulsoup4 \
+    'paho-mqtt>=1.6'
+update_progress 90
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --install|--reinstall)
-                action="install"
-                ;;
-            --remove|--uninstall)
-                action="remove"
-                ;;
-            --progress-file)
-                shift
-                PROGRESS_FILE="${1:-}"
-                ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
-            *)
-                log "WARNING" "Option inconnue: $1"
-                ;;
-        esac
-        shift || true
-    done
+deactivate || true
 
-    if [[ "${action}" == "install" ]]; then
-        update_progress 0
-        ensure_python
-        create_venv
-        update_progress 100
-        return 0
-    elif [[ "${action}" == "remove" ]]; then
-        remove_venv
-        return 0
-    else
-        show_help
-        return 1
-    fi
-}
+update_progress 100
+log "INFO" "Installation des dépendances terminée"
 
-main "$@"
+exit 0
