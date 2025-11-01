@@ -303,6 +303,29 @@ class acreexp extends eqLogic {
     }
 
     /**
+     * Retourne le binaire Python d'un environnement virtuel.
+     */
+    private static function locateVenvPython($venvDir) {
+        $candidates = [
+            $venvDir . '/bin/python3',
+            $venvDir . '/bin/python',
+            $venvDir . '/Scripts/python.exe',
+            $venvDir . '/Scripts/python3.exe',
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate === '') {
+                continue;
+            }
+            if (file_exists($candidate) && (is_executable($candidate) || stripos(PHP_OS, 'WIN') === 0)) {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    /**
      * Crée un environnement virtuel Python.
      */
     private function createVirtualEnv($python, $venvDir) {
