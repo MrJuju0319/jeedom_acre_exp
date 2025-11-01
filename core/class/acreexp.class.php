@@ -7,6 +7,12 @@
 require_once __DIR__ . '/../../../../core/php/core.inc.php';
 
 class acreexp extends eqLogic {
+    private const CACHE_LAST_REFRESH = 'acreexp:last_refresh';
+    private const WATCHDOG_SERVICE = 'acre-exp-watchdog.service';
+    private const WATCHDOG_UNIT = '/etc/systemd/system/acre-exp-watchdog.service';
+    private const WATCHDOG_BIN = '/usr/local/bin/acre_exp_watchdog.py';
+    private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
+
     /**
      * Retourne des informations sur le démon du plugin.
      *
@@ -14,13 +20,14 @@ class acreexp extends eqLogic {
      */
     public static function deamon_info() {
         $info = [
-            'state' => 'nok',
+            'state' => self::isWatchdogActive() ? 'ok' : 'nok',
             'launchable' => 'ok',
             'launchable_message' => '',
         ];
 
-        if (self::isDaemonRunning()) {
-            $info['state'] = 'ok';
+        if (!self::isWatchdogInstalled()) {
+            $info['launchable'] = 'nok';
+            $info['launchable_message'] = __('Le service watchdog n\'est pas installé', __FILE__);
         }
 
         if (count(eqLogic::byType('acreexp', true)) === 0) {
@@ -43,75 +50,74 @@ class acreexp extends eqLogic {
             throw new Exception(__('Le démon ne peut pas être lancé : ', __FILE__) . $info['launchable_message']);
         }
 
-        if (self::isDaemonRunning()) {
-            self::deamon_stop();
-            sleep(1);
+        if (!self::isWatchdogInstalled()) {
+            throw new Exception(__('Le service watchdog n\'est pas installé', __FILE__));
         }
-
-        $runtimeDir = self::getRuntimeDirectory();
-        if (!file_exists($runtimeDir)) {
-            mkdir($runtimeDir, 0770, true);
-        }
-
-        $pidFile = self::getPidFile();
-        $stopFile = self::getStopFile();
-        if (file_exists($stopFile)) {
-            unlink($stopFile);
-        }
-
-        $cmd = 'php ' . escapeshellarg(__DIR__ . '/../php/acreexp.php')
-            . ' --pid ' . escapeshellarg($pidFile)
-            . ' --stop ' . escapeshellarg($stopFile);
 
         if ($_debug) {
-            $cmd .= ' --debug';
+            log::add('acreexp', 'debug', __('Redémarrage du service watchdog en mode debug', __FILE__));
         }
 
-        $cmd .= ' >> ' . log::getPathToLog('acreexp_daemon') . ' 2>&1 & echo $!';
-        $pid = exec($cmd);
-
-        if (!is_numeric($pid)) {
-            log::add('acreexp', 'error', __('Impossible de démarrer le démon (PID invalide)', __FILE__));
-            throw new Exception(__('Impossible de démarrer le démon', __FILE__));
+        self::runSystemctl('enable --now ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
+        if ($code !== 0) {
+            log::add('acreexp', 'error', sprintf(__('Impossible de démarrer le service watchdog : %s', __FILE__), trim($output)));
+            throw new Exception(__('Impossible de démarrer le service watchdog', __FILE__));
         }
 
-        file_put_contents($pidFile, trim($pid));
-        log::add('acreexp', 'info', sprintf(__('Démon lancé (PID %s)', __FILE__), $pid));
+        log::add('acreexp', 'info', __('Service watchdog démarré', __FILE__));
     }
 
     /**
      * Arrête le démon du plugin.
      */
     public static function deamon_stop() {
-        $pid = self::getDaemonPid();
-        $pidFile = self::getPidFile();
-        $stopFile = self::getStopFile();
+        self::runSystemctl('stop ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
+        if ($code !== 0) {
+            log::add('acreexp', 'warning', sprintf(__('Arrêt du service watchdog : %s', __FILE__), trim($output)));
+        } else {
+            log::add('acreexp', 'info', __('Service watchdog arrêté', __FILE__));
+        }
+    }
 
-        if (!file_exists($stopFile)) {
-            @file_put_contents($stopFile, (string)time());
+    /**
+     * Informations sur les dépendances (installation du watchdog système).
+     *
+     * @return array
+     */
+    public static function dependancy_info() {
+        return [
+            'log' => 'acreexp_dep',
+            'progress_file' => self::getDependencyProgressFile(),
+            'state' => self::isWatchdogInstalled() ? 'ok' : 'nok',
+        ];
+    }
+
+    /**
+     * Installation (ou réinstallation) des dépendances.
+     *
+     * @throws Exception
+     */
+    public static function dependancy_install() {
+        $script = self::getResourcesDirectory() . '/install.sh';
+        if (!file_exists($script)) {
+            throw new Exception(__('Script install.sh introuvable', __FILE__));
         }
 
-        self::sendSignal($pid, 'SIGTERM');
+        $log = log::getPathToLog('acreexp_dep');
+        $progress = self::getDependencyProgressFile();
+        @file_put_contents($progress, '0');
 
-        for ($i = 0; $i < 10; $i++) {
-            if (!self::isDaemonRunning()) {
-                break;
-            }
-            sleep(1);
-            self::sendSignal($pid, 'SIGTERM');
-        }
+        $cmd = self::getSudoCmd() . 'ASSUME_YES=true /bin/bash ' . escapeshellarg($script) . ' --install';
+        $cmd .= ' >> ' . escapeshellarg($log) . ' 2>&1';
 
-        if (self::isDaemonRunning()) {
-            log::add('acreexp', 'warning', __('Arrêt forcé du démon', __FILE__));
-            self::sendSignal($pid, 'SIGKILL');
-            sleep(1);
-        }
+        $output = [];
+        $code = 0;
+        exec($cmd, $output, $code);
 
-        if (file_exists($pidFile)) {
-            @unlink($pidFile);
-        }
-        if (file_exists($stopFile)) {
-            @unlink($stopFile);
+        @file_put_contents($progress, '100');
+
+        if ($code !== 0) {
+            throw new Exception(__('Échec de l\'installation des dépendances (voir log acreexp_dep)', __FILE__));
         }
     }
 
@@ -121,18 +127,8 @@ class acreexp extends eqLogic {
      * @throws Exception
      */
     public function preSave() {
-        $host = trim((string)$this->getConfiguration('host'));
-        $user = trim((string)$this->getConfiguration('user'));
-        $code = trim((string)$this->getConfiguration('code'));
-
-        if ($host === '') {
-            throw new Exception(__('L\'adresse IP ou le nom d\'hôte est obligatoire', __FILE__));
-        }
-        if ($user === '') {
-            throw new Exception(__('L\'identifiant est obligatoire', __FILE__));
-        }
-        if ($code === '') {
-            throw new Exception(__('Le code utilisateur est obligatoire', __FILE__));
+        if (!$this->hasCompleteConfiguration()) {
+            return;
         }
     }
 
@@ -140,6 +136,10 @@ class acreexp extends eqLogic {
      * Synchronise les commandes après la sauvegarde.
      */
     public function postSave() {
+        if (!$this->hasCompleteConfiguration()) {
+            log::add('acreexp', 'info', __('Synchronisation différée : configuration incomplète.', __FILE__));
+            return;
+        }
         try {
             $this->synchronize(true);
         } catch (Exception $e) {
@@ -152,6 +152,20 @@ class acreexp extends eqLogic {
      */
     public function refreshFromController() {
         $this->synchronize(false);
+    }
+
+    /**
+     * Rafraîchissement périodique via les tâches cron Jeedom.
+     */
+    public static function cron() {
+        self::maybeRefreshEquipments();
+    }
+
+    /**
+     * Rafraîchissement périodique (fallback).
+     */
+    public static function cron5() {
+        self::maybeRefreshEquipments();
     }
 
     /**
@@ -179,8 +193,8 @@ class acreexp extends eqLogic {
 
         $protocol = $https ? 'https' : 'http';
 
-        if ($host === '') {
-            throw new Exception(__('Hôte non défini', __FILE__));
+        if ($host === '' || $user === '' || $code === '') {
+            throw new Exception(__('Configuration incomplète : renseignez l\'hôte, l\'identifiant et le code utilisateur.', __FILE__));
         }
 
         $baseUrl = $host;
@@ -216,13 +230,18 @@ class acreexp extends eqLogic {
 
         file_put_contents($tmpFile, self::arrayToYaml($config));
 
-        $python = self::findPythonBinary();
-        $script = realpath(__DIR__ . '/../../../acre_exp_status.py');
-        if ($script === false || !file_exists($script)) {
+        $script = self::locateStatusScript();
+        if ($script === '') {
             throw new Exception(__('Script acre_exp_status.py introuvable', __FILE__));
         }
 
-        $cmd = escapeshellcmd($python) . ' ' . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
+        $useInstalledBinary = ($script === self::STATUS_BIN);
+        if ($useInstalledBinary) {
+            $cmd = self::getSudoCmd() . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
+        } else {
+            $python = self::findPythonBinary();
+            $cmd = escapeshellcmd($python) . ' ' . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
+        }
         $descriptorSpec = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
@@ -256,6 +275,19 @@ class acreexp extends eqLogic {
         }
 
         return $data;
+    }
+
+    /**
+     * Indique si l'équipement dispose d'une configuration complète.
+     *
+     * @return bool
+     */
+    private function hasCompleteConfiguration() {
+        $host = trim((string)$this->getConfiguration('host'));
+        $user = trim((string)$this->getConfiguration('user'));
+        $code = trim((string)$this->getConfiguration('code'));
+
+        return ($host !== '' && $user !== '' && $code !== '');
     }
 
     /**
@@ -434,70 +466,156 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Retourne le chemin du fichier PID.
+     * Retourne le dossier resources du plugin.
      *
      * @return string
      */
-    private static function getPidFile() {
-        return self::getRuntimeDirectory() . '/acreexp.pid';
+    private static function getResourcesDirectory() {
+        return dirname(__DIR__, 2) . '/plugins/acreexp/resources';
     }
 
     /**
-     * Retourne le chemin du fichier stop.
-     *
-     * @return string
+     * Détermine si un rafraîchissement est dû et, le cas échéant, déclenche la synchronisation.
      */
-    private static function getStopFile() {
-        return self::getRuntimeDirectory() . '/acreexp.stop';
-    }
+    private static function maybeRefreshEquipments() {
+        $interval = max(10, (int)config::byKey('poll_interval', 'acreexp', 60));
+        $now = time();
+        $lastRun = (int)cache::byKey(self::CACHE_LAST_REFRESH, 0);
 
-    /**
-     * Retourne le PID courant du démon.
-     *
-     * @return int
-     */
-    private static function getDaemonPid() {
-        $pidFile = self::getPidFile();
-        if (!file_exists($pidFile)) {
-            return 0;
+        if ($lastRun > 0 && ($now - $lastRun) < $interval) {
+            return;
         }
-        $content = trim((string)file_get_contents($pidFile));
-        return (int)$content;
+
+        cache::set(self::CACHE_LAST_REFRESH, $now, 0);
+        self::refreshEnabledEquipments();
     }
 
     /**
-     * Indique si le démon est actif.
+     * Rafraîchit tous les équipements activés et correctement configurés.
+     */
+    private static function refreshEnabledEquipments() {
+        foreach (eqLogic::byType('acreexp', true) as $eqLogic) {
+            if (!($eqLogic instanceof self)) {
+                continue;
+            }
+            if ((int)$eqLogic->getIsEnable() !== 1) {
+                continue;
+            }
+            if (!self::equipmentHasCompleteConfiguration($eqLogic)) {
+                continue;
+            }
+
+            try {
+                $eqLogic->refreshFromController();
+            } catch (Exception $e) {
+                log::add('acreexp', 'error', sprintf(__('Erreur lors du rafraîchissement de %s : %s', __FILE__), $eqLogic->getHumanName(), $e->getMessage()));
+            }
+        }
+    }
+
+    /**
+     * Vérifie qu'un équipement dispose d'une configuration complète.
+     *
+     * @param self $eqLogic
+     * @return bool
+     */
+    private static function equipmentHasCompleteConfiguration(self $eqLogic) {
+        $host = trim((string)$eqLogic->getConfiguration('host'));
+        $user = trim((string)$eqLogic->getConfiguration('user'));
+        $code = trim((string)$eqLogic->getConfiguration('code'));
+
+        return ($host !== '' && $user !== '' && $code !== '');
+    }
+
+    /**
+     * Détermine le chemin du script status Python utilisable.
+     *
+     * @return string
+     */
+    private static function locateStatusScript() {
+        $candidates = [
+            self::STATUS_BIN,
+            self::getResourcesDirectory() . '/acre_exp_status.py',
+        ];
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && file_exists($candidate)) {
+                return $candidate;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Indique si le watchdog système est installé.
      *
      * @return bool
      */
-    private static function isDaemonRunning() {
-        $pid = self::getDaemonPid();
-        if ($pid <= 0) {
-            return false;
+    private static function isWatchdogInstalled() {
+        if (file_exists(self::WATCHDOG_BIN) || file_exists(self::WATCHDOG_UNIT)) {
+            return true;
         }
-        return @posix_kill($pid, 0);
+        $output = [];
+        $code = 0;
+        exec(self::getSudoCmd() . 'systemctl list-unit-files ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
+        if ($code === 0) {
+            foreach ($output as $line) {
+                if (strpos($line, self::WATCHDOG_SERVICE) !== false) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
-     * Envoie un signal POSIX si possible.
+     * Retourne vrai si le service systemd est actif.
      *
-     * @param int $pid
-     * @param string $signalName
+     * @return bool
      */
-    private static function sendSignal($pid, $signalName) {
-        if ($pid <= 0) {
-            return;
+    private static function isWatchdogActive() {
+        $cmd = self::getSudoCmd() . 'systemctl is-active ' . escapeshellarg(self::WATCHDOG_SERVICE) . ' 2>&1';
+        $output = trim((string)shell_exec($cmd));
+        return ($output === 'active');
+    }
+
+    /**
+     * Retourne le fichier de progression des dépendances.
+     *
+     * @return string
+     */
+    private static function getDependencyProgressFile() {
+        return self::getRuntimeDirectory() . '/dependancy';
+    }
+
+    /**
+     * Exécute une commande systemctl et retourne son résultat.
+     *
+     * @param string $arguments
+     * @param string|null $output
+     * @param int|null $code
+     * @return bool
+     */
+    private static function runSystemctl($arguments, &$output = null, &$code = null) {
+        $cmd = self::getSudoCmd() . 'systemctl ' . $arguments . ' 2>&1';
+        $buffer = [];
+        $status = 0;
+        exec($cmd, $buffer, $status);
+        $output = implode("\n", $buffer);
+        $code = $status;
+        return $status === 0;
+    }
+
+    /**
+     * Retourne la commande sudo adaptée à l'environnement Jeedom.
+     *
+     * @return string
+     */
+    private static function getSudoCmd() {
+        $cmd = trim((string)system::getCmdSudo());
+        if ($cmd !== '' && substr($cmd, -1) !== ' ') {
+            $cmd .= ' ';
         }
-        $signal = defined($signalName) ? constant($signalName) : null;
-        if ($signal === null && $signalName === 'SIGTERM') {
-            $signal = 15;
-        } elseif ($signal === null && $signalName === 'SIGKILL') {
-            $signal = 9;
-        }
-        if ($signal === null) {
-            return;
-        }
-        @posix_kill($pid, $signal);
+        return $cmd;
     }
 }
 
