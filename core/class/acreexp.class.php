@@ -10,10 +10,8 @@ class acreexp extends eqLogic {
     private const CACHE_LAST_REFRESH = 'acreexp:last_refresh';
     private const PID_FILE_NAME = 'acreexp.pid';
     private const STOP_FILE_NAME = 'acreexp.stop';
-    private const WATCHDOG_SERVICE = 'acre-exp-watchdog.service';
-    private const WATCHDOG_UNIT = '/etc/systemd/system/acre-exp-watchdog.service';
-    private const WATCHDOG_BIN = '/usr/local/bin/acre_exp_watchdog.py';
     private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
+    private static $pythonDebug = false;
 
     /**
      * Retourne des informations sur le démon du plugin.
@@ -21,19 +19,14 @@ class acreexp extends eqLogic {
      * @return array
      */
     public static function deamon_info() {
-        $watchdogInstalled = self::isWatchdogInstalled();
         $daemonRunning = self::isRefreshLoopRunning();
+        $dependenciesReady = self::areDependenciesReady();
 
         $info = [
-            'state' => ($daemonRunning && (!$watchdogInstalled || self::isWatchdogActive())) ? 'ok' : 'nok',
-            'launchable' => 'ok',
-            'launchable_message' => '',
+            'state' => $daemonRunning ? 'ok' : 'nok',
+            'launchable' => $dependenciesReady ? 'ok' : 'nok',
+            'launchable_message' => $dependenciesReady ? '' : __('Les dépendances Python ne sont pas installées', __FILE__),
         ];
-
-        if (!$watchdogInstalled) {
-            $info['launchable'] = 'nok';
-            $info['launchable_message'] = __('Le service watchdog n\'est pas installé', __FILE__);
-        }
 
         if (count(eqLogic::byType('acreexp', true)) === 0) {
             $info['launchable'] = 'nok';
@@ -55,26 +48,17 @@ class acreexp extends eqLogic {
             throw new Exception(__('Le démon ne peut pas être lancé : ', __FILE__) . $info['launchable_message']);
         }
 
-        if (!self::isWatchdogInstalled()) {
-            throw new Exception(__('Le service watchdog n\'est pas installé', __FILE__));
-        }
-
-        if ($_debug) {
-            log::add('acreexp', 'debug', __('Redémarrage du service watchdog en mode debug', __FILE__));
-        }
-
-        self::runSystemctl('enable --now ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
-        if ($code !== 0) {
-            log::add('acreexp', 'error', sprintf(__('Impossible de démarrer le service watchdog : %s', __FILE__), trim($output)));
-            throw new Exception(__('Impossible de démarrer le service watchdog', __FILE__));
-        }
+        self::$pythonDebug = (bool)$_debug;
 
         if (!self::startRefreshLoop($_debug)) {
-            self::runSystemctl('stop ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
             throw new Exception(__('Impossible de démarrer la boucle de rafraîchissement', __FILE__));
         }
 
-        log::add('acreexp', 'info', __('Service watchdog démarré', __FILE__));
+        if ($_debug) {
+            log::add('acreexp', 'debug', __('Démon démarré en mode debug', __FILE__));
+        }
+
+        log::add('acreexp', 'info', __('Boucle de rafraîchissement démarrée', __FILE__));
     }
 
     /**
@@ -82,12 +66,8 @@ class acreexp extends eqLogic {
      */
     public static function deamon_stop() {
         self::stopRefreshLoop();
-        self::runSystemctl('stop ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
-        if ($code !== 0) {
-            log::add('acreexp', 'warning', sprintf(__('Arrêt du service watchdog : %s', __FILE__), trim($output)));
-        } else {
-            log::add('acreexp', 'info', __('Service watchdog arrêté', __FILE__));
-        }
+        self::$pythonDebug = false;
+        log::add('acreexp', 'info', __('Boucle de rafraîchissement arrêtée', __FILE__));
     }
 
     /**
@@ -99,7 +79,7 @@ class acreexp extends eqLogic {
         return [
             'log' => 'acreexp_dep',
             'progress_file' => self::getDependencyProgressFile(),
-            'state' => self::isWatchdogInstalled() ? 'ok' : 'nok',
+            'state' => self::areDependenciesReady() ? 'ok' : 'nok',
         ];
     }
 
@@ -116,16 +96,19 @@ class acreexp extends eqLogic {
 
         $log = log::getPathToLog('acreexp_dep');
         $progress = self::getDependencyProgressFile();
+        $progressDir = dirname($progress);
+        if (!file_exists($progressDir)) {
+            @mkdir($progressDir, 0770, true);
+        }
         @file_put_contents($progress, '0');
 
-        $cmd = self::getSudoCmd() . 'ASSUME_YES=true /bin/bash ' . escapeshellarg($script) . ' --install';
+        $cmd = self::getSudoCmd() . 'ASSUME_YES=true /bin/bash ' . escapeshellarg($script)
+            . ' --install --progress-file ' . escapeshellarg($progress);
         $cmd .= ' >> ' . escapeshellarg($log) . ' 2>&1';
 
         $output = [];
         $code = 0;
         exec($cmd, $output, $code);
-
-        @file_put_contents($progress, '100');
 
         if ($code !== 0) {
             throw new Exception(__('Échec de l\'installation des dépendances (voir log acreexp_dep)', __FILE__));
@@ -252,6 +235,10 @@ class acreexp extends eqLogic {
         } else {
             $python = self::findPythonBinary();
             $cmd = escapeshellcmd($python) . ' ' . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
+        }
+
+        if (self::isPythonDebugEnabled()) {
+            $cmd .= ' --debug';
         }
         $descriptorSpec = [
             0 => ['pipe', 'r'],
@@ -445,6 +432,63 @@ class acreexp extends eqLogic {
     }
 
     /**
+     * Vérifie la présence de l'environnement Python et des dépendances requises.
+     *
+     * @return bool
+     */
+    private static function areDependenciesReady() {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+
+        $python = self::findPythonBinary();
+        if (!is_string($python) || $python === '') {
+            $cached = false;
+            return $cached;
+        }
+
+        $script = "import importlib.util, sys\n";
+        $script .= "modules = ['yaml', 'requests', 'bs4', 'paho.mqtt.client']\n";
+        $script .= "missing = [m for m in modules if importlib.util.find_spec(m) is None]\n";
+        $script .= "sys.exit(0 if not missing else 1)\n";
+
+        $tmp = @tempnam(sys_get_temp_dir(), 'acreexp_dep_');
+        if ($tmp === false) {
+            $cached = false;
+            return $cached;
+        }
+
+        if (@file_put_contents($tmp, $script) === false) {
+            @unlink($tmp);
+            $cached = false;
+            return $cached;
+        }
+        $cmd = escapeshellarg($python) . ' ' . escapeshellarg($tmp);
+        $output = [];
+        $code = 0;
+        exec($cmd, $output, $code);
+        @unlink($tmp);
+
+        $cached = ($code === 0);
+        return $cached;
+    }
+
+    /**
+     * Indique si le mode debug doit être propagé aux scripts Python.
+     *
+     * @return bool
+     */
+    private static function isPythonDebugEnabled() {
+        if (self::$pythonDebug) {
+            return true;
+        }
+
+        $level = strtolower((string)config::byKey('log::level::acreexp', 'core', ''));
+        return ($level === 'debug');
+    }
+
+    /**
      * Retourne le chemin du binaire Python.
      *
      * @return string
@@ -505,7 +549,8 @@ class acreexp extends eqLogic {
         if (!file_exists($pidFile)) {
             return 0;
         }
-        return '';
+        $pid = (int)trim((string)@file_get_contents($pidFile));
+        return ($pid > 0) ? $pid : 0;
     }
 
     /**
@@ -704,39 +749,6 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Indique si le watchdog système est installé.
-     *
-     * @return bool
-     */
-    private static function isWatchdogInstalled() {
-        if (file_exists(self::WATCHDOG_BIN) || file_exists(self::WATCHDOG_UNIT)) {
-            return true;
-        }
-        $output = [];
-        $code = 0;
-        exec(self::getSudoCmd() . 'systemctl list-unit-files ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
-        if ($code === 0) {
-            foreach ($output as $line) {
-                if (strpos($line, self::WATCHDOG_SERVICE) !== false) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Retourne vrai si le service systemd est actif.
-     *
-     * @return bool
-     */
-    private static function isWatchdogActive() {
-        $cmd = self::getSudoCmd() . 'systemctl is-active ' . escapeshellarg(self::WATCHDOG_SERVICE) . ' 2>&1';
-        $output = trim((string)shell_exec($cmd));
-        return ($output === 'active');
-    }
-
-    /**
      * Envoie un signal à un processus si possible.
      *
      * @return bool
@@ -770,24 +782,6 @@ class acreexp extends eqLogic {
      */
     private static function getDependencyProgressFile() {
         return self::getRuntimeDirectory() . '/dependancy';
-    }
-
-    /**
-     * Exécute une commande systemctl et retourne son résultat.
-     *
-     * @param string $arguments
-     * @param string|null $output
-     * @param int|null $code
-     * @return bool
-     */
-    private static function runSystemctl($arguments, &$output = null, &$code = null) {
-        $cmd = self::getSudoCmd() . 'systemctl ' . $arguments . ' 2>&1';
-        $buffer = [];
-        $status = 0;
-        exec($cmd, $buffer, $status);
-        $output = implode("\n", $buffer);
-        $code = $status;
-        return $status === 0;
     }
 
     /**
