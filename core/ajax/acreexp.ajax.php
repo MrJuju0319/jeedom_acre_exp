@@ -34,6 +34,15 @@ try {
             ajax::success(acreexp::deamon_info());
             break;
 
+        case 'dependancyInfo':
+            ajax::success(acreexp::dependancy_info());
+            break;
+
+        case 'dependancyInstall':
+            acreexp::dependancy_install_async();
+            ajax::success(__('Installation des dépendances lancée', __FILE__));
+            break;
+
         default:
             throw new Exception(__('Aucune méthode correspondante à', __FILE__) . ' : ' . $action);
     }

@@ -8,10 +8,10 @@ require_once __DIR__ . '/../../../../core/php/core.inc.php';
 
 class acreexp extends eqLogic {
     private const CACHE_LAST_REFRESH = 'acreexp:last_refresh';
+    private const CACHE_PYTHON_DEBUG = 'acreexp:python_debug';
     private const PID_FILE_NAME = 'acreexp.pid';
     private const STOP_FILE_NAME = 'acreexp.stop';
     private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
-    private static $pythonDebugFlag = false;
 
     /**
      * Retourne des informations sur le démon du plugin.
@@ -49,7 +49,7 @@ class acreexp extends eqLogic {
             throw new Exception(__('Le démon ne peut pas être lancé : ', __FILE__) . $info['launchable_message']);
         }
 
-        self::$pythonDebugFlag = (bool)$_debug;
+        cache::set(self::CACHE_PYTHON_DEBUG, $_debug ? 1 : 0, 0);
 
         if (!self::startRefreshLoop($_debug)) {
             throw new Exception(__('Impossible de démarrer la boucle de rafraîchissement', __FILE__));
@@ -67,7 +67,7 @@ class acreexp extends eqLogic {
      */
     public static function deamon_stop() {
         self::stopRefreshLoop();
-        self::$pythonDebugFlag = false;
+        cache::set(self::CACHE_PYTHON_DEBUG, 0, 0);
         log::add('acreexp', 'info', __('Boucle de rafraîchissement arrêtée', __FILE__));
     }
 
@@ -77,11 +77,17 @@ class acreexp extends eqLogic {
      * @return array
      */
     public static function dependancy_info() {
-        return [
+        $info = [
             'log' => 'acreexp_dep',
             'progress_file' => self::getDependencyProgressFile(),
             'state' => self::areDependenciesReady() ? 'ok' : 'nok',
         ];
+
+        $progress = self::getDependencyProgressValue();
+        $info['progress'] = $progress;
+        $info['in_progress'] = self::isDependencyInstallRunning($progress);
+
+        return $info;
     }
 
     /**
@@ -90,23 +96,7 @@ class acreexp extends eqLogic {
      * @throws Exception
      */
     public static function dependancy_install() {
-        $script = self::getResourcesDirectory() . '/install.sh';
-        if (!file_exists($script)) {
-            throw new Exception(__('Script install.sh introuvable', __FILE__));
-        }
-
-        $log = log::getPathToLog('acreexp_dep');
-        $progress = self::getDependencyProgressFile();
-        $progressDir = dirname($progress);
-        if (!file_exists($progressDir)) {
-            @mkdir($progressDir, 0770, true);
-        }
-        @file_put_contents($progress, '0');
-
-        $cmd = self::getSudoCmd() . 'ASSUME_YES=true /bin/bash ' . escapeshellarg($script)
-            . ' --install --progress-file ' . escapeshellarg($progress);
-        $cmd .= ' >> ' . escapeshellarg($log) . ' 2>&1';
-
+        [$cmd] = self::buildDependencyInstallCommand();
         $output = [];
         $code = 0;
         exec($cmd, $output, $code);
@@ -114,6 +104,18 @@ class acreexp extends eqLogic {
         if ($code !== 0) {
             throw new Exception(__('Échec de l\'installation des dépendances (voir log acreexp_dep)', __FILE__));
         }
+    }
+
+    /**
+     * Lance l'installation des dépendances en tâche de fond.
+     */
+    public static function dependancy_install_async() {
+        if (self::isDependencyInstallRunning()) {
+            throw new Exception(__('Une installation des dépendances est déjà en cours', __FILE__));
+        }
+
+        [$cmd] = self::buildDependencyInstallCommand();
+        exec($cmd . ' &');
     }
 
     /**
@@ -433,6 +435,89 @@ class acreexp extends eqLogic {
     }
 
     /**
+     * Prépare la commande shell permettant d'installer les dépendances Python.
+     *
+     * @return array{0:string}
+     * @throws Exception
+     */
+    private static function buildDependencyInstallCommand() {
+        $script = self::getResourcesDirectory() . '/install.sh';
+        if (!file_exists($script)) {
+            throw new Exception(__('Script install.sh introuvable', __FILE__));
+        }
+
+        $log = log::getPathToLog('acreexp_dep');
+        $progress = self::getDependencyProgressFile();
+        $progressDir = dirname($progress);
+        if (!file_exists($progressDir)) {
+            @mkdir($progressDir, 0770, true);
+        }
+        @file_put_contents($progress, '0');
+
+        $cmd = self::getSudoCmd() . 'ASSUME_YES=true /bin/bash ' . escapeshellarg($script)
+            . ' --install --progress-file ' . escapeshellarg($progress);
+        $cmd .= ' >> ' . escapeshellarg($log) . ' 2>&1';
+
+        return [$cmd];
+    }
+
+    /**
+     * Retourne la progression courante de l'installation des dépendances (0-100).
+     *
+     * @return int
+     */
+    private static function getDependencyProgressValue() {
+        $progressFile = self::getDependencyProgressFile();
+        if (!file_exists($progressFile)) {
+            return 0;
+        }
+
+        $value = trim((string)@file_get_contents($progressFile));
+        if ($value === '') {
+            return 0;
+        }
+
+        $numeric = (int)$value;
+        if ($numeric < 0) {
+            return 0;
+        }
+        if ($numeric > 100) {
+            return 100;
+        }
+        return $numeric;
+    }
+
+    /**
+     * Détermine si une installation de dépendances semble en cours.
+     *
+     * @param int|null $progress
+     * @return bool
+     */
+    private static function isDependencyInstallRunning($progress = null) {
+        if ($progress === null) {
+            $progress = self::getDependencyProgressValue();
+        }
+        $progressFile = self::getDependencyProgressFile();
+        if (!file_exists($progressFile)) {
+            return false;
+        }
+
+        $mtime = @filemtime($progressFile);
+        if ($mtime === false) {
+            return false;
+        }
+
+        if ($progress <= 0) {
+            return (time() - $mtime) < 10;
+        }
+        if ($progress >= 100) {
+            return false;
+        }
+
+        return (time() - $mtime) < 600;
+    }
+
+    /**
      * Vérifie la présence de l'environnement Python et des dépendances requises.
      *
      * @return bool
@@ -481,7 +566,7 @@ class acreexp extends eqLogic {
      * @return bool
      */
     private static function isPythonDebugEnabled() {
-        if (self::$pythonDebugFlag) {
+        if ((int)cache::byKey(self::CACHE_PYTHON_DEBUG, 0) === 1) {
             return true;
         }
 
