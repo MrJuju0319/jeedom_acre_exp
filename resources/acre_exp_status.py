@@ -123,6 +123,20 @@ class SPCClient:
         except Exception:
             pass
 
+    def _cookie_lookup(self, name: str) -> str:
+        jar = getattr(self.session, "cookies", None)
+        if jar is None:
+            return ""
+        wanted = name.lower()
+        for cookie in jar:
+            cname = getattr(cookie, "name", "") or ""
+            if cname.lower() != wanted:
+                continue
+            value = getattr(cookie, "value", "")
+            if value:
+                return str(value)
+        return ""
+
     def _load_session_cache(self) -> Dict[str, Any]:
         if not os.path.exists(self.session_file):
             return {}
@@ -205,16 +219,19 @@ class SPCClient:
         if not sid:
             # Certains firmwares ne renvoient le SID que via les cookies.
             for key in ("session", "Session", "SESSION"):
-                cookie_val = self.session.cookies.get(key)
+                cookie_val = self._cookie_lookup(key)
                 if cookie_val:
-                    sid = str(cookie_val)
+                    sid = cookie_val
                     break
         if not sid:
             # Dernier recours : vérifier les cookies spécifiques à SPC.
-            for cookie in self.session.cookies:
-                if cookie.name.lower().startswith("session") and cookie.value:
-                    sid = str(cookie.value)
-                    break
+            jar = getattr(self.session, "cookies", None)
+            if jar is not None:
+                for cookie in jar:
+                    name = getattr(cookie, "name", "")
+                    if name and name.lower().startswith("session") and getattr(cookie, "value", ""):
+                        sid = str(cookie.value)
+                        break
         if self.debug:
             LOGGER.debug("Login SID=%s", sid or "(aucun)")
         if sid:
