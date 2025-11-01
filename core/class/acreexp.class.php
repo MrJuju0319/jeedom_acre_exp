@@ -7,6 +7,7 @@
 require_once __DIR__ . '/../../../../core/php/core.inc.php';
 
 class acreexp extends eqLogic {
+    private const CACHE_LAST_REFRESH = 'acreexp:last_refresh';
     private const WATCHDOG_SERVICE = 'acre-exp-watchdog.service';
     private const WATCHDOG_UNIT = '/etc/systemd/system/acre-exp-watchdog.service';
     private const WATCHDOG_BIN = '/usr/local/bin/acre_exp_watchdog.py';
@@ -151,6 +152,20 @@ class acreexp extends eqLogic {
      */
     public function refreshFromController() {
         $this->synchronize(false);
+    }
+
+    /**
+     * Rafraîchissement périodique via les tâches cron Jeedom.
+     */
+    public static function cron() {
+        self::maybeRefreshEquipments();
+    }
+
+    /**
+     * Rafraîchissement périodique (fallback).
+     */
+    public static function cron5() {
+        self::maybeRefreshEquipments();
     }
 
     /**
@@ -457,6 +472,59 @@ class acreexp extends eqLogic {
      */
     private static function getResourcesDirectory() {
         return dirname(__DIR__, 2) . '/plugins/acreexp/resources';
+    }
+
+    /**
+     * Détermine si un rafraîchissement est dû et, le cas échéant, déclenche la synchronisation.
+     */
+    private static function maybeRefreshEquipments() {
+        $interval = max(10, (int)config::byKey('poll_interval', 'acreexp', 60));
+        $now = time();
+        $lastRun = (int)cache::byKey(self::CACHE_LAST_REFRESH, 0);
+
+        if ($lastRun > 0 && ($now - $lastRun) < $interval) {
+            return;
+        }
+
+        cache::set(self::CACHE_LAST_REFRESH, $now, 0);
+        self::refreshEnabledEquipments();
+    }
+
+    /**
+     * Rafraîchit tous les équipements activés et correctement configurés.
+     */
+    private static function refreshEnabledEquipments() {
+        foreach (eqLogic::byType('acreexp', true) as $eqLogic) {
+            if (!($eqLogic instanceof self)) {
+                continue;
+            }
+            if ((int)$eqLogic->getIsEnable() !== 1) {
+                continue;
+            }
+            if (!self::equipmentHasCompleteConfiguration($eqLogic)) {
+                continue;
+            }
+
+            try {
+                $eqLogic->refreshFromController();
+            } catch (Exception $e) {
+                log::add('acreexp', 'error', sprintf(__('Erreur lors du rafraîchissement de %s : %s', __FILE__), $eqLogic->getHumanName(), $e->getMessage()));
+            }
+        }
+    }
+
+    /**
+     * Vérifie qu'un équipement dispose d'une configuration complète.
+     *
+     * @param self $eqLogic
+     * @return bool
+     */
+    private static function equipmentHasCompleteConfiguration(self $eqLogic) {
+        $host = trim((string)$eqLogic->getConfiguration('host'));
+        $user = trim((string)$eqLogic->getConfiguration('user'));
+        $code = trim((string)$eqLogic->getConfiguration('code'));
+
+        return ($host !== '' && $user !== '' && $code !== '');
     }
 
     /**
