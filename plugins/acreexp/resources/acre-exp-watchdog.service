@@ -1,0 +1,31 @@
+[Unit]
+Description=ACRE SPC42 -> MQTT Watchdog (zones + secteurs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/acre_exp_watchdog.py -c /etc/acre_exp/config.yml
+Restart=always
+RestartSec=3
+
+# Sandbox + chemins écriture explicités
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/acre_exp /etc/acre_exp
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# User/Group (root par défaut; tu peux créer un user dédié si besoin)
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

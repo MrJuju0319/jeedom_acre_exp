@@ -13,8 +13,8 @@ if ($pidFile !== '') {
 }
 
 $loopDelay = (int)config::byKey('poll_interval', 'acreexp', 60);
-if ($loopDelay < 10) {
-    $loopDelay = 10;
+if ($loopDelay < 1) {
+    $loopDelay = 1;
 }
 
 log::add('acreexp', 'info', sprintf(__('Démon démarré (cycle %ss)', __FILE__), $loopDelay));
@@ -42,6 +42,15 @@ while (true) {
             }
         }
     }
+
+    $nextDelay = (int)config::byKey('poll_interval', 'acreexp', 60);
+    if ($nextDelay < 1) {
+        $nextDelay = 1;
+    }
+    if ($nextDelay !== $loopDelay) {
+        log::add('acreexp', 'info', sprintf(__('Nouvel intervalle de rafraîchissement : %ss', __FILE__), $nextDelay));
+    }
+    $loopDelay = $nextDelay;
 
     for ($i = 0; $i < $loopDelay; $i++) {
         if ($stopFile !== '' && file_exists($stopFile)) {

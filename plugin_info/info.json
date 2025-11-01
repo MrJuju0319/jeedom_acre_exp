@@ -9,7 +9,7 @@
   "author": "Jeedom Community",
   "require": "4.4",
   "category": "security",
-  "hasDependency": false,
+  "hasDependency": true,
   "hasOwnDeamon": true,
   "maxDependancyInstallTime": 0,
   "documentation": "plugins/acreexp/docs/fr_FR/index.md",
