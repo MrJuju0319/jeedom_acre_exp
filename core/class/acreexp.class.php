@@ -11,7 +11,7 @@ class acreexp extends eqLogic {
     private const PID_FILE_NAME = 'acreexp.pid';
     private const STOP_FILE_NAME = 'acreexp.stop';
     private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
-    private static $pythonDebug = false;
+    private static $pythonDebugFlag = false;
 
     /**
      * Retourne des informations sur le démon du plugin.
@@ -26,6 +26,7 @@ class acreexp extends eqLogic {
             'state' => $daemonRunning ? 'ok' : 'nok',
             'launchable' => $dependenciesReady ? 'ok' : 'nok',
             'launchable_message' => $dependenciesReady ? '' : __('Les dépendances Python ne sont pas installées', __FILE__),
+            'log' => 'acreexp_daemon',
         ];
 
         if (count(eqLogic::byType('acreexp', true)) === 0) {
@@ -48,7 +49,7 @@ class acreexp extends eqLogic {
             throw new Exception(__('Le démon ne peut pas être lancé : ', __FILE__) . $info['launchable_message']);
         }
 
-        self::$pythonDebug = (bool)$_debug;
+        self::$pythonDebugFlag = (bool)$_debug;
 
         if (!self::startRefreshLoop($_debug)) {
             throw new Exception(__('Impossible de démarrer la boucle de rafraîchissement', __FILE__));
@@ -66,7 +67,7 @@ class acreexp extends eqLogic {
      */
     public static function deamon_stop() {
         self::stopRefreshLoop();
-        self::$pythonDebug = false;
+        self::$pythonDebugFlag = false;
         log::add('acreexp', 'info', __('Boucle de rafraîchissement arrêtée', __FILE__));
     }
 
@@ -480,7 +481,7 @@ class acreexp extends eqLogic {
      * @return bool
      */
     private static function isPythonDebugEnabled() {
-        if (self::$pythonDebug) {
+        if (self::$pythonDebugFlag) {
             return true;
         }
 
