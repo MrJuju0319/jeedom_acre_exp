@@ -17,7 +17,7 @@ if (!isConnect()) {
         <sup><i class="fas fa-question-circle tooltips" title="{{Durée entre deux interrogations successives des centrales. Valeur minimale recommandée : 10 secondes.}}"></i></sup>
       </label>
       <div class="col-lg-3">
-        <input class="configKey form-control" data-l1key="poll_interval" placeholder="60" type="number" min="10" step="1" />
+        <input class="configKey form-control" data-l1key="poll_interval" placeholder="60" type="number" min="1" step="1" />
       </div>
     </div>
     <div class="form-group">

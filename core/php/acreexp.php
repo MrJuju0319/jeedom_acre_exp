@@ -13,8 +13,8 @@ if ($pidFile !== '') {
 }
 
 $loopDelay = (int)config::byKey('poll_interval', 'acreexp', 60);
-if ($loopDelay < 10) {
-    $loopDelay = 10;
+if ($loopDelay < 1) {
+    $loopDelay = 1;
 }
 
 log::add('acreexp', 'info', sprintf(__('Démon démarré (cycle %ss)', __FILE__), $loopDelay));
