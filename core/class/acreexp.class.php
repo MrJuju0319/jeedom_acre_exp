@@ -756,7 +756,7 @@ class acreexp extends eqLogic {
      * @return string
      */
     private static function getResourcesDirectory() {
-        return dirname(__DIR__, 2) . '/plugins/acreexp/resources';
+        return dirname(__DIR__, 2) . '/resources';
     }
 
     /**
