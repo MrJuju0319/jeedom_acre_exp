@@ -158,11 +158,14 @@ class SPCClient:
     def _extract_session(self, text_or_url: str) -> str:
         if not text_or_url:
             return ""
-        match = re.search(r"[?&]session=([0-9A-Za-zx]+)", text_or_url)
+        pattern = r"[?&]session=([-_0-9A-Za-z]+)"
+        match = re.search(pattern, text_or_url, flags=re.IGNORECASE)
         if match:
             return match.group(1)
-        match = re.search(r"secure\.htm\?[^\"'>]*session=([0-9A-Za-zx]+)", text_or_url)
-        return match.group(1) if match else ""
+        match = re.search(r"secure\.htm\?[^\"'>]*session=([-_0-9A-Za-z]+)", text_or_url, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return ""
 
     @staticmethod
     def _normalize_label(text: str) -> str:
@@ -199,6 +202,19 @@ class SPCClient:
             return ""
 
         sid = self._extract_session(getattr(response, "url", "")) or self._extract_session(response.text)
+        if not sid:
+            # Certains firmwares ne renvoient le SID que via les cookies.
+            for key in ("session", "Session", "SESSION"):
+                cookie_val = self.session.cookies.get(key)
+                if cookie_val:
+                    sid = str(cookie_val)
+                    break
+        if not sid:
+            # Dernier recours : vérifier les cookies spécifiques à SPC.
+            for cookie in self.session.cookies:
+                if cookie.name.lower().startswith("session") and cookie.value:
+                    sid = str(cookie.value)
+                    break
         if self.debug:
             LOGGER.debug("Login SID=%s", sid or "(aucun)")
         if sid:
