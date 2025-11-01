@@ -140,7 +140,14 @@ class acreexp extends eqLogic {
         $exitCode = proc_close($process);
 
         if ($exitCode !== 0) {
-            throw new Exception(sprintf(__('Le script Python a retourné une erreur (%s)', __FILE__), trim($errors)));
+            $errorMessage = trim($errors);
+            if ($errorMessage === '') {
+                $errorMessage = trim($output);
+            }
+            if ($errorMessage === '') {
+                $errorMessage = __('aucune sortie fournie', __FILE__);
+            }
+            throw new Exception(sprintf(__('Le script Python a retourné une erreur : %s', __FILE__), $errorMessage));
         }
 
         $data = json_decode($output, true);
@@ -274,7 +281,6 @@ class acreexp extends eqLogic {
 
         $venvDir = $eqDirectory . '/' . self::VENV_DIRECTORY;
         $pythonExecutable = self::locateVenvPython($venvDir);
-        $pipExecutable = $venvDir . '/bin/pip';
         $requirements = self::getResourcesDirectory() . '/requirements.txt';
         $requirementsHash = file_exists($requirements) ? sha1_file($requirements) : '';
         $hashFile = $eqDirectory . '/' . self::REQUIREMENTS_SENTINEL;
@@ -290,7 +296,7 @@ class acreexp extends eqLogic {
         }
 
         if ($needInstall && file_exists($requirements)) {
-            $this->installPythonRequirements($pipExecutable, $requirements);
+            $this->installPythonRequirements($venvDir, $requirements);
             file_put_contents($hashFile, $requirementsHash);
         }
 
@@ -344,37 +350,33 @@ class acreexp extends eqLogic {
     /**
      * Installe les dépendances Python dans l\'environnement virtuel.
      */
-    private function installPythonRequirements($pipExecutable, $requirements) {
-        $pipCandidates = [
-            $pipExecutable,
-            dirname($pipExecutable) . '/pip3',
-            dirname($pipExecutable) . '/pip',
-            dirname($pipExecutable) . '/../Scripts/pip.exe',
-            dirname($pipExecutable) . '/../Scripts/pip3.exe',
-        ];
-        $pipExecutable = '';
-        foreach ($pipCandidates as $candidate) {
-            if ($candidate !== '' && file_exists($candidate)) {
-                $pipExecutable = $candidate;
-                break;
-            }
-        }
-        if ($pipExecutable === '') {
-            throw new Exception(__('Pip introuvable dans l\'environnement virtuel', __FILE__));
+    private function installPythonRequirements($venvDir, $requirements) {
+        $pythonExecutable = self::locateVenvPython($venvDir);
+        if ($pythonExecutable === '') {
+            throw new Exception(__('Binaire Python introuvable dans l\'environnement virtuel', __FILE__));
         }
 
         $commands = [
-            escapeshellarg($pipExecutable) . ' install --upgrade pip',
-            escapeshellarg($pipExecutable) . ' install -r ' . escapeshellarg($requirements),
+            ['cmd' => escapeshellarg($pythonExecutable) . ' -m ensurepip --upgrade', 'optional' => true],
+            ['cmd' => escapeshellarg($pythonExecutable) . ' -m pip install --upgrade pip', 'optional' => false],
+            ['cmd' => escapeshellarg($pythonExecutable) . ' -m pip install -r ' . escapeshellarg($requirements), 'optional' => false],
         ];
 
-        foreach ($commands as $cmd) {
+        foreach ($commands as $entry) {
             $output = [];
             $code = 0;
-            exec($cmd . ' 2>&1', $output, $code);
+            exec($entry['cmd'] . ' 2>&1', $output, $code);
             if ($code !== 0) {
+                if (!empty($entry['optional'])) {
+                    continue;
+                }
                 throw new Exception(sprintf(__('Échec lors de l\'installation des dépendances Python : %s', __FILE__), trim(implode('\n', $output))));
             }
+        }
+
+        exec(escapeshellarg($pythonExecutable) . ' -m pip --version 2>&1', $verifyOutput, $verifyCode);
+        if ($verifyCode !== 0) {
+            throw new Exception(sprintf(__('Vérification de pip impossible : %s', __FILE__), trim(implode('\n', (array)$verifyOutput))));
         }
     }
 
