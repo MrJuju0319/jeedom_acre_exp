@@ -8,6 +8,8 @@ require_once __DIR__ . '/../../../../core/php/core.inc.php';
 
 class acreexp extends eqLogic {
     private const CACHE_LAST_REFRESH = 'acreexp:last_refresh';
+    private const PID_FILE_NAME = 'acreexp.pid';
+    private const STOP_FILE_NAME = 'acreexp.stop';
     private const WATCHDOG_SERVICE = 'acre-exp-watchdog.service';
     private const WATCHDOG_UNIT = '/etc/systemd/system/acre-exp-watchdog.service';
     private const WATCHDOG_BIN = '/usr/local/bin/acre_exp_watchdog.py';
@@ -19,13 +21,16 @@ class acreexp extends eqLogic {
      * @return array
      */
     public static function deamon_info() {
+        $watchdogInstalled = self::isWatchdogInstalled();
+        $daemonRunning = self::isRefreshLoopRunning();
+
         $info = [
-            'state' => self::isWatchdogActive() ? 'ok' : 'nok',
+            'state' => ($daemonRunning && (!$watchdogInstalled || self::isWatchdogActive())) ? 'ok' : 'nok',
             'launchable' => 'ok',
             'launchable_message' => '',
         ];
 
-        if (!self::isWatchdogInstalled()) {
+        if (!$watchdogInstalled) {
             $info['launchable'] = 'nok';
             $info['launchable_message'] = __('Le service watchdog n\'est pas installé', __FILE__);
         }
@@ -64,6 +69,11 @@ class acreexp extends eqLogic {
             throw new Exception(__('Impossible de démarrer le service watchdog', __FILE__));
         }
 
+        if (!self::startRefreshLoop($_debug)) {
+            self::runSystemctl('stop ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
+            throw new Exception(__('Impossible de démarrer la boucle de rafraîchissement', __FILE__));
+        }
+
         log::add('acreexp', 'info', __('Service watchdog démarré', __FILE__));
     }
 
@@ -71,6 +81,7 @@ class acreexp extends eqLogic {
      * Arrête le démon du plugin.
      */
     public static function deamon_stop() {
+        self::stopRefreshLoop();
         self::runSystemctl('stop ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
         if ($code !== 0) {
             log::add('acreexp', 'warning', sprintf(__('Arrêt du service watchdog : %s', __FILE__), trim($output)));
@@ -466,6 +477,149 @@ class acreexp extends eqLogic {
     }
 
     /**
+     * Retourne le chemin du fichier PID utilisé par la boucle de rafraîchissement.
+     *
+     * @return string
+     */
+    private static function getRefreshPidFile() {
+        return self::getRuntimeDirectory() . '/' . self::PID_FILE_NAME;
+    }
+
+    /**
+     * Retourne le chemin du fichier stop utilisé par la boucle de rafraîchissement.
+     *
+     * @param self $eqLogic
+     * @return bool
+     */
+    private static function getRefreshStopFile() {
+        return self::getRuntimeDirectory() . '/' . self::STOP_FILE_NAME;
+    }
+
+    /**
+     * Retourne le PID courant de la boucle de rafraîchissement.
+     *
+     * @return string
+     */
+    private static function getRefreshPid() {
+        $pidFile = self::getRefreshPidFile();
+        if (!file_exists($pidFile)) {
+            return 0;
+        }
+        return '';
+    }
+
+    /**
+     * Indique si la boucle de rafraîchissement est active.
+     *
+     * @return bool
+     */
+    private static function isRefreshLoopRunning() {
+        $pid = self::getRefreshPid();
+        if ($pid <= 0) {
+            return false;
+        }
+
+        if (function_exists('posix_kill')) {
+            return @posix_kill($pid, 0);
+        }
+
+        $result = [];
+        $code = 0;
+        exec('ps -p ' . (int)$pid . ' -o pid=', $result, $code);
+        return ($code === 0 && !empty($result));
+    }
+
+    /**
+     * Démarre la boucle de rafraîchissement interne.
+     *
+     * @param bool $debug
+     * @return bool
+     */
+    private static function startRefreshLoop($debug = false) {
+        if (self::isRefreshLoopRunning()) {
+            self::stopRefreshLoop();
+            sleep(1);
+        }
+
+        $runtimeDir = self::getRuntimeDirectory();
+        if (!file_exists($runtimeDir)) {
+            mkdir($runtimeDir, 0770, true);
+        }
+
+        $pidFile = self::getRefreshPidFile();
+        $stopFile = self::getRefreshStopFile();
+        if (file_exists($stopFile)) {
+            @unlink($stopFile);
+        }
+
+        $phpBinary = PHP_BINARY ?: '/usr/bin/php';
+        $script = __DIR__ . '/../php/acreexp.php';
+        $cmd = escapeshellarg($phpBinary) . ' ' . escapeshellarg($script)
+            . ' --pid ' . escapeshellarg($pidFile)
+            . ' --stop ' . escapeshellarg($stopFile);
+
+        if ($debug) {
+            $cmd .= ' --debug';
+        }
+
+        $logFile = log::getPathToLog('acreexp_daemon');
+        $cmd .= ' >> ' . escapeshellarg($logFile) . ' 2>&1 & echo $!';
+
+        $shellCmd = '/bin/bash -c ' . escapeshellarg($cmd);
+        $pid = trim((string)shell_exec($shellCmd));
+
+        if (!is_numeric($pid) || (int)$pid <= 0) {
+            log::add('acreexp', 'error', __('PID invalide au démarrage de la boucle de rafraîchissement', __FILE__));
+            return false;
+        }
+
+        file_put_contents($pidFile, $pid);
+        log::add('acreexp', 'info', sprintf(__('Boucle de rafraîchissement démarrée (PID %s)', __FILE__), $pid));
+        return true;
+    }
+
+    /**
+     * Arrête la boucle de rafraîchissement interne.
+     */
+    private static function stopRefreshLoop() {
+        $pid = self::getRefreshPid();
+        if ($pid <= 0) {
+            return;
+        }
+
+        $pidFile = self::getRefreshPidFile();
+        $stopFile = self::getRefreshStopFile();
+        if (!file_exists($stopFile)) {
+            @file_put_contents($stopFile, (string)time());
+        }
+
+        self::sendSignal($pid, 'SIGTERM');
+
+        for ($i = 0; $i < 10; $i++) {
+            if (!self::isRefreshLoopRunning()) {
+                break;
+            }
+            sleep(1);
+            self::sendSignal($pid, 'SIGTERM');
+        }
+
+        if (self::isRefreshLoopRunning()) {
+            log::add('acreexp', 'warning', __('Arrêt forcé de la boucle de rafraîchissement', __FILE__));
+            self::sendSignal($pid, 'SIGKILL');
+            sleep(1);
+        }
+
+        if (file_exists($pidFile)) {
+            @unlink($pidFile);
+        }
+        if (file_exists($stopFile)) {
+            @unlink($stopFile);
+        }
+
+        cache::set(self::CACHE_LAST_REFRESH, 0, 0);
+    }
+
+    /**
      * Retourne le dossier resources du plugin.
      *
      * @return string
@@ -478,7 +632,11 @@ class acreexp extends eqLogic {
      * Détermine si un rafraîchissement est dû et, le cas échéant, déclenche la synchronisation.
      */
     private static function maybeRefreshEquipments() {
-        $interval = max(10, (int)config::byKey('poll_interval', 'acreexp', 60));
+        if (self::isRefreshLoopRunning()) {
+            return;
+        }
+
+        $interval = max(1, (int)config::byKey('poll_interval', 'acreexp', 60));
         $now = time();
         $lastRun = (int)cache::byKey(self::CACHE_LAST_REFRESH, 0);
 
@@ -576,6 +734,33 @@ class acreexp extends eqLogic {
         $cmd = self::getSudoCmd() . 'systemctl is-active ' . escapeshellarg(self::WATCHDOG_SERVICE) . ' 2>&1';
         $output = trim((string)shell_exec($cmd));
         return ($output === 'active');
+    }
+
+    /**
+     * Envoie un signal à un processus si possible.
+     *
+     * @return bool
+     */
+    private static function sendSignal($pid, $signalName) {
+        if ($pid <= 0) {
+            return;
+        }
+        $signal = defined($signalName) ? constant($signalName) : null;
+        if ($signal === null) {
+            if ($signalName === 'SIGTERM') {
+                $signal = 15;
+            } elseif ($signalName === 'SIGKILL') {
+                $signal = 9;
+            }
+        }
+        if ($signal === null) {
+            return;
+        }
+        if (function_exists('posix_kill')) {
+            @posix_kill($pid, $signal);
+        } else {
+            exec('kill -' . (int)$signal . ' ' . (int)$pid . ' >/dev/null 2>&1');
+        }
     }
 
     /**
