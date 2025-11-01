@@ -7,11 +7,31 @@
 require_once __DIR__ . '/../../../../core/php/core.inc.php';
 
 class acreexp extends eqLogic {
+    /*     * *************************Attributs****************************** */
+
+    /**
+     * Configuration de widgets personnalisés.
+     *
+     * @var array
+     */
+    public static $_widgetPossibility = array();
+
+    /**
+     * Configuration chiffrée côté Jeedom.
+     *
+     * Le code utilisateur SPC est stocké chiffré en base.
+     *
+     * @var array
+     */
+    public static $_encryptConfigKey = array('code');
+
     private const CACHE_LAST_REFRESH = 'acreexp:last_refresh';
     private const CACHE_PYTHON_DEBUG = 'acreexp:python_debug';
     private const PID_FILE_NAME = 'acreexp.pid';
     private const STOP_FILE_NAME = 'acreexp.stop';
     private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
+
+    /*     * ***********************Methode static*************************** */
 
     /**
      * Retourne des informations sur le démon du plugin.
@@ -117,6 +137,8 @@ class acreexp extends eqLogic {
         [$cmd] = self::buildDependencyInstallCommand();
         exec($cmd . ' &');
     }
+
+    /*     * *********************Méthodes d'instance************************* */
 
     /**
      * Validation avant sauvegarde de l'équipement.
@@ -884,6 +906,7 @@ class acreexp extends eqLogic {
     }
 }
 
+/*     * **********************Getteur Setteur*************************** */
 class acreexpCmd extends cmd {
     /**
      * Exécution d'une commande.
