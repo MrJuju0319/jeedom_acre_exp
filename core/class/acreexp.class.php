@@ -29,7 +29,8 @@ class acreexp extends eqLogic {
     private const CACHE_PYTHON_DEBUG = 'acreexp:python_debug';
     private const PID_FILE_NAME = 'acreexp.pid';
     private const STOP_FILE_NAME = 'acreexp.stop';
-    private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
+    private const LEGACY_STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
+    private const STATUS_SCRIPT = 'acre_exp_status.py';
 
     /*     * ***********************Methode static*************************** */
 
@@ -254,13 +255,8 @@ class acreexp extends eqLogic {
             throw new Exception(__('Script acre_exp_status.py introuvable', __FILE__));
         }
 
-        $useInstalledBinary = ($script === self::STATUS_BIN);
-        if ($useInstalledBinary) {
-            $cmd = self::getSudoCmd() . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
-        } else {
-            $python = self::findPythonBinary();
-            $cmd = escapeshellcmd($python) . ' ' . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
-        }
+        $python = self::findPythonBinary();
+        $cmd = escapeshellcmd($python) . ' ' . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
 
         if (self::isPythonDebugEnabled()) {
             $cmd .= ' --debug';
@@ -778,6 +774,18 @@ class acreexp extends eqLogic {
      * @return string
      */
     private static function getResourcesDirectory() {
+        try {
+            $plugin = plugin::byId('acreexp');
+            if ($plugin instanceof plugin) {
+                $path = rtrim($plugin->getPath(), '/');
+                if ($path !== '') {
+                    return $path . '/resources';
+                }
+            }
+        } catch (Exception $e) {
+            // Ignore and fallback to relative resolution below.
+        }
+
         return dirname(__DIR__, 2) . '/resources';
     }
 
@@ -845,8 +853,8 @@ class acreexp extends eqLogic {
      */
     private static function locateStatusScript() {
         $candidates = [
-            self::STATUS_BIN,
-            self::getResourcesDirectory() . '/acre_exp_status.py',
+            self::getResourcesDirectory() . '/' . self::STATUS_SCRIPT,
+            self::LEGACY_STATUS_BIN,
         ];
         foreach ($candidates as $candidate) {
             if (is_string($candidate) && file_exists($candidate)) {
