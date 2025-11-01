@@ -488,7 +488,8 @@ class acreexp extends eqLogic {
     /**
      * Retourne le chemin du fichier stop utilisé par la boucle de rafraîchissement.
      *
-     * @return string
+     * @param self $eqLogic
+     * @return bool
      */
     private static function getRefreshStopFile() {
         return self::getRuntimeDirectory() . '/' . self::STOP_FILE_NAME;
@@ -497,15 +498,14 @@ class acreexp extends eqLogic {
     /**
      * Retourne le PID courant de la boucle de rafraîchissement.
      *
-     * @return int
+     * @return string
      */
     private static function getRefreshPid() {
         $pidFile = self::getRefreshPidFile();
         if (!file_exists($pidFile)) {
             return 0;
         }
-        $content = trim((string)file_get_contents($pidFile));
-        return (int)$content;
+        return '';
     }
 
     /**
@@ -739,8 +739,7 @@ class acreexp extends eqLogic {
     /**
      * Envoie un signal à un processus si possible.
      *
-     * @param int $pid
-     * @param string $signalName
+     * @return bool
      */
     private static function sendSignal($pid, $signalName) {
         if ($pid <= 0) {
