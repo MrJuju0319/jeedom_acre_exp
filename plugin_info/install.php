@@ -8,17 +8,19 @@ require_once __DIR__ . '/../core/php/acreexp.inc.php';
 // Fonction exécutée automatiquement après l'installation du plugin
 function acreexp_install() {
     acreexp_apply_default_configuration();
+    @mkdir(dirname(__FILE__) . '/../data', 0775, true);
 }
 
 // Fonction exécutée automatiquement après la mise à jour du plugin
 function acreexp_update() {
     acreexp_apply_default_configuration();
+    @mkdir(dirname(__FILE__) . '/../data', 0775, true);
 }
 
 // Fonction exécutée automatiquement après la suppression du plugin
 function acreexp_remove() {
-    // Suppression des fichiers runtime (PID, cache de session, etc.).
-    $runtimeDir = jeedom::getTmpFolder('acreexp');
+    // Suppression des environnements virtuels et fichiers de configuration.
+    $runtimeDir = dirname(__FILE__) . '/../data';
     if (file_exists($runtimeDir)) {
         try {
             $files = new RecursiveIteratorIterator(

@@ -102,33 +102,4 @@ $('#bt_acreexp_refresh').on('click', function () {
   })
 })
 
-function updateAcreexpDaemonInfo () {
-  if ($('#acreexp_daemon_warning').length === 0) {
-    return
-  }
-  $.ajax({
-    type: 'POST',
-    url: 'plugins/acreexp/core/ajax/acreexp.ajax.php',
-    data: {
-      action: 'daemonInfo'
-    },
-    dataType: 'json',
-    global: false,
-    success: function (data) {
-      if (data.state !== 'ok') {
-        return
-      }
-      const info = data.result
-      if (!info || info.state === 'ok') {
-        $('#acreexp_daemon_warning').hide().empty()
-        return
-      }
-      const message = info.launchable === 'nok' && info.launchable_message
-        ? info.launchable_message
-        : '{{Le démon n\'est pas démarré. Rendez-vous sur la page de configuration du plugin pour le lancer.}}'
-      $('#acreexp_daemon_warning').html('<i class="fas fa-exclamation-triangle"></i> ' + message).show()
-    }
-  })
-}
 
-updateAcreexpDaemonInfo()

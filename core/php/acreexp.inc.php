@@ -11,7 +11,7 @@ if (!function_exists('acreexp_apply_default_configuration')) {
      */
     function acreexp_apply_default_configuration() {
         $defaults = [
-            'poll_interval' => 60,
+            'poll_interval' => 300,
             'python_binary' => '',
         ];
 

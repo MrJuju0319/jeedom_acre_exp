@@ -25,11 +25,6 @@ $eqLogics = eqLogic::byType($plugin->getId());
         <br />
         <span>{{Logs}}</span>
       </div>
-      <div class="cursor eqLogicAction" data-action="openLog" data-log="acreexp_daemon">
-        <i class="fas fa-terminal"></i>
-        <br />
-        <span>{{Log démon}}</span>
-      </div>
     </div>
     <legend><i class="fas fa-shield-alt"></i> {{Mes centrales ACRE/Siemens}}</legend>
     <?php if (count($eqLogics) === 0) { ?>
@@ -171,9 +166,8 @@ $eqLogics = eqLogic::byType($plugin->getId());
                 </div>
               </div>
               <div class="alert alert-info">
-                <i class="fas fa-lightbulb"></i> {{Après enregistrement, utilisez le bouton "Synchroniser maintenant" pour récupérer automatiquement les secteurs et zones depuis la centrale.}}
+                <i class="fas fa-lightbulb"></i> {{Chaque équipement dispose de son propre environnement Python. Enregistrez puis utilisez "Synchroniser maintenant" pour initialiser l'environnement et récupérer les secteurs/zones.}}
               </div>
-              <div class="alert alert-warning" id="acreexp_daemon_warning" style="display:none;"></div>
             </div>
           </fieldset>
         </form>

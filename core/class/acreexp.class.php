@@ -1,112 +1,30 @@
 <?php
-/* This file is part of Jeedom and is licensed under the AGPL.
- *
+/*
  * Plugin ACRE SPC : intégration de la centrale ACRE/Siemens SPC dans Jeedom.
  */
 
 require_once __DIR__ . '/../../../../core/php/core.inc.php';
 
 class acreexp extends eqLogic {
-    private const CACHE_LAST_REFRESH = 'acreexp:last_refresh';
-    private const PID_FILE_NAME = 'acreexp.pid';
-    private const STOP_FILE_NAME = 'acreexp.stop';
-    private const WATCHDOG_SERVICE = 'acre-exp-watchdog.service';
-    private const WATCHDOG_UNIT = '/etc/systemd/system/acre-exp-watchdog.service';
-    private const WATCHDOG_BIN = '/usr/local/bin/acre_exp_watchdog.py';
-    private const STATUS_BIN = '/usr/local/bin/acre_exp_status.py';
+    private const CACHE_PREFIX = 'acreexp:last_refresh:';
+    private const CONFIG_FILE = 'config.yaml';
+    private const REQUIREMENTS_SENTINEL = '.requirements';
+    private const VENV_DIRECTORY = 'venv';
+    private const STATUS_SCRIPT = '/python/acre_exp_status.py';
 
     /**
-     * Retourne des informations sur le démon du plugin.
-     *
-     * @return array
-     */
-    public static function deamon_info() {
-        $watchdogInstalled = self::isWatchdogInstalled();
-        $daemonRunning = self::isRefreshLoopRunning();
-
-        $info = [
-            'state' => ($daemonRunning && (!$watchdogInstalled || self::isWatchdogActive())) ? 'ok' : 'nok',
-            'launchable' => 'ok',
-            'launchable_message' => '',
-        ];
-
-        if (!$watchdogInstalled) {
-            $info['launchable'] = 'nok';
-            $info['launchable_message'] = __('Le service watchdog n\'est pas installé', __FILE__);
-        }
-
-        if (count(eqLogic::byType('acreexp', true)) === 0) {
-            $info['launchable'] = 'nok';
-            $info['launchable_message'] = __('Aucun équipement configuré', __FILE__);
-        }
-
-        return $info;
-    }
-
-    /**
-     * Démarre le démon PHP qui interroge périodiquement les centrales configurées.
-     *
-     * @param bool $_debug
-     * @throws Exception
-     */
-    public static function deamon_start($_debug = false) {
-        $info = self::deamon_info();
-        if ($info['launchable'] === 'nok') {
-            throw new Exception(__('Le démon ne peut pas être lancé : ', __FILE__) . $info['launchable_message']);
-        }
-
-        if (!self::isWatchdogInstalled()) {
-            throw new Exception(__('Le service watchdog n\'est pas installé', __FILE__));
-        }
-
-        if ($_debug) {
-            log::add('acreexp', 'debug', __('Redémarrage du service watchdog en mode debug', __FILE__));
-        }
-
-        self::runSystemctl('enable --now ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
-        if ($code !== 0) {
-            log::add('acreexp', 'error', sprintf(__('Impossible de démarrer le service watchdog : %s', __FILE__), trim($output)));
-            throw new Exception(__('Impossible de démarrer le service watchdog', __FILE__));
-        }
-
-        if (!self::startRefreshLoop($_debug)) {
-            self::runSystemctl('stop ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
-            throw new Exception(__('Impossible de démarrer la boucle de rafraîchissement', __FILE__));
-        }
-
-        log::add('acreexp', 'info', __('Service watchdog démarré', __FILE__));
-    }
-
-    /**
-     * Arrête le démon du plugin.
-     */
-    public static function deamon_stop() {
-        self::stopRefreshLoop();
-        self::runSystemctl('stop ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
-        if ($code !== 0) {
-            log::add('acreexp', 'warning', sprintf(__('Arrêt du service watchdog : %s', __FILE__), trim($output)));
-        } else {
-            log::add('acreexp', 'info', __('Service watchdog arrêté', __FILE__));
-        }
-    }
-
-    /**
-     * Informations sur les dépendances (installation du watchdog système).
-     *
-     * @return array
+     * Informations sur l'état des dépendances du plugin.
      */
     public static function dependancy_info() {
         return [
             'log' => 'acreexp_dep',
             'progress_file' => self::getDependencyProgressFile(),
-            'state' => self::isWatchdogInstalled() ? 'ok' : 'nok',
+            'state' => self::isBaseEnvironmentReady() ? 'ok' : 'nok',
         ];
     }
 
     /**
      * Installation (ou réinstallation) des dépendances.
-     *
-     * @throws Exception
      */
     public static function dependancy_install() {
         $script = self::getResourcesDirectory() . '/install.sh';
@@ -118,7 +36,7 @@ class acreexp extends eqLogic {
         $progress = self::getDependencyProgressFile();
         @file_put_contents($progress, '0');
 
-        $cmd = self::getSudoCmd() . 'ASSUME_YES=true /bin/bash ' . escapeshellarg($script) . ' --install';
+        $cmd = self::getSudoCmd() . '/bin/bash ' . escapeshellarg($script) . ' --install';
         $cmd .= ' >> ' . escapeshellarg($log) . ' 2>&1';
 
         $output = [];
@@ -133,25 +51,16 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Validation avant sauvegarde de l'équipement.
-     *
-     * @throws Exception
-     */
-    public function preSave() {
-        if (!$this->hasCompleteConfiguration()) {
-            return;
-        }
-    }
-
-    /**
-     * Synchronise les commandes après la sauvegarde.
+     * Synchronise l'équipement après sauvegarde.
      */
     public function postSave() {
         if (!$this->hasCompleteConfiguration()) {
             log::add('acreexp', 'info', __('Synchronisation différée : configuration incomplète.', __FILE__));
             return;
         }
+
         try {
+            $this->prepareEnvironment();
             $this->synchronize(true);
         } catch (Exception $e) {
             log::add('acreexp', 'error', sprintf(__('Synchronisation impossible : %s', __FILE__), $e->getMessage()));
@@ -159,21 +68,28 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Interroge la centrale et met à jour les commandes existantes.
+     * Nettoie les ressources de l'équipement après suppression.
+     */
+    public function postRemove() {
+        self::removeEquipmentDirectory($this->getId());
+    }
+
+    /**
+     * Rafraîchit l'équipement à la demande.
      */
     public function refreshFromController() {
         $this->synchronize(false);
     }
 
     /**
-     * Rafraîchissement périodique via les tâches cron Jeedom.
+     * Tâche cron de rafraîchissement.
      */
     public static function cron() {
         self::maybeRefreshEquipments();
     }
 
     /**
-     * Rafraîchissement périodique (fallback).
+     * Tâche cron fallback (cron5).
      */
     public static function cron5() {
         self::maybeRefreshEquipments();
@@ -181,78 +97,30 @@ class acreexp extends eqLogic {
 
     /**
      * Synchronise l'équipement avec la centrale.
-     *
-     * @param bool $createMissing Crée les commandes manquantes si vrai.
      */
     public function synchronize($createMissing = false) {
-        $snapshot = $this->fetchControllerSnapshot();
-        $this->applySnapshot($snapshot, (bool)$createMissing);
-    }
-
-    /**
-     * Effectue un appel au script Python pour récupérer l'état courant.
-     *
-     * @return array
-     * @throws Exception
-     */
-    private function fetchControllerSnapshot() {
-        $host = trim((string)$this->getConfiguration('host'));
-        $user = trim((string)$this->getConfiguration('user'));
-        $code = trim((string)$this->getConfiguration('code'));
-        $port = trim((string)$this->getConfiguration('port'));
-        $https = (bool)$this->getConfiguration('https', 0);
-
-        $protocol = $https ? 'https' : 'http';
-
-        if ($host === '' || $user === '' || $code === '') {
+        if (!$this->hasCompleteConfiguration()) {
             throw new Exception(__('Configuration incomplète : renseignez l\'hôte, l\'identifiant et le code utilisateur.', __FILE__));
         }
 
-        $baseUrl = $host;
-        if (strpos($baseUrl, 'http://') !== 0 && strpos($baseUrl, 'https://') !== 0) {
-            $baseUrl = $protocol . '://' . $baseUrl;
-        }
-        if ($port !== '') {
-            if (preg_match('#^https?://#i', $baseUrl)) {
-                $baseUrl = preg_replace('#^(https?://[^/:]+)(:\d+)?#i', '$1:' . $port, $baseUrl);
-            } else {
-                $baseUrl .= ':' . $port;
-            }
-        }
+        $snapshot = $this->fetchControllerSnapshot();
+        $this->applySnapshot($snapshot, (bool)$createMissing);
+        cache::set(self::CACHE_PREFIX . $this->getId(), time(), 0);
+    }
 
-        $runtimeDir = self::getRuntimeDirectory();
-        if (!file_exists($runtimeDir)) {
-            mkdir($runtimeDir, 0770, true);
-        }
+    /**
+     * Retourne un instantané des zones/secteurs depuis la centrale.
+     */
+    private function fetchControllerSnapshot() {
+        $python = $this->prepareEnvironment();
+        $configFile = $this->writeConfigurationFile();
+        $script = self::getStatusScriptPath();
 
-        $config = [
-            'spc' => [
-                'host' => $baseUrl,
-                'user' => $user,
-                'pin' => $code,
-                'session_cache_dir' => $runtimeDir . '/session_' . $this->getId(),
-            ],
-        ];
-
-        $tmpFile = tempnam($runtimeDir, 'cfg_');
-        if ($tmpFile === false) {
-            throw new Exception(__('Impossible de créer un fichier de configuration temporaire', __FILE__));
-        }
-
-        file_put_contents($tmpFile, self::arrayToYaml($config));
-
-        $script = self::locateStatusScript();
         if ($script === '') {
             throw new Exception(__('Script acre_exp_status.py introuvable', __FILE__));
         }
 
-        $useInstalledBinary = ($script === self::STATUS_BIN);
-        if ($useInstalledBinary) {
-            $cmd = self::getSudoCmd() . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
-        } else {
-            $python = self::findPythonBinary();
-            $cmd = escapeshellcmd($python) . ' ' . escapeshellarg($script) . ' -c ' . escapeshellarg($tmpFile);
-        }
+        $cmd = escapeshellarg($python) . ' ' . escapeshellarg($script) . ' -c ' . escapeshellarg($configFile);
         $descriptorSpec = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
@@ -261,7 +129,6 @@ class acreexp extends eqLogic {
 
         $process = proc_open($cmd, $descriptorSpec, $pipes);
         if (!is_resource($process)) {
-            unlink($tmpFile);
             throw new Exception(__('Impossible d\'exécuter le script Python', __FILE__));
         }
 
@@ -271,7 +138,6 @@ class acreexp extends eqLogic {
         fclose($pipes[1]);
         fclose($pipes[2]);
         $exitCode = proc_close($process);
-        unlink($tmpFile);
 
         if ($exitCode !== 0) {
             throw new Exception(sprintf(__('Le script Python a retourné une erreur (%s)', __FILE__), trim($errors)));
@@ -289,9 +155,7 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Indique si l'équipement dispose d'une configuration complète.
-     *
-     * @return bool
+     * Vérifie si la configuration est complète.
      */
     private function hasCompleteConfiguration() {
         $host = trim((string)$this->getConfiguration('host'));
@@ -302,10 +166,7 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Applique un snapshot récupéré depuis la centrale.
-     *
-     * @param array $snapshot
-     * @param bool $createMissing Crée les commandes absentes si vrai.
+     * Applique un instantané renvoyé par la centrale.
      */
     private function applySnapshot(array $snapshot, $createMissing) {
         $zones = isset($snapshot['zones']) && is_array($snapshot['zones']) ? $snapshot['zones'] : [];
@@ -356,10 +217,6 @@ class acreexp extends eqLogic {
 
     /**
      * Crée une commande info si elle n'existe pas.
-     *
-     * @param string $logicalId
-     * @param string $name
-     * @param string $subType
      */
     private function ensureInfoCmd($logicalId, $name, $subType) {
         $cmd = $this->getCmd(null, $logicalId);
@@ -376,10 +233,7 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Met à jour la valeur d'une commande si elle existe.
-     *
-     * @param string $logicalId
-     * @param mixed $value
+     * Met à jour la valeur d'une commande.
      */
     private function updateCmdValue($logicalId, $value) {
         $cmd = $this->getCmd(null, $logicalId);
@@ -389,9 +243,7 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Supprime les commandes obsolètes qui ne figurent plus dans le snapshot.
-     *
-     * @param array $validLogicalIds
+     * Supprime les commandes obsolètes.
      */
     private function removeObsoleteCommands(array $validLogicalIds) {
         $valid = array_unique($validLogicalIds);
@@ -407,11 +259,151 @@ class acreexp extends eqLogic {
     }
 
     /**
+     * Prépare l'environnement Python de l'équipement et retourne le binaire.
+     */
+    private function prepareEnvironment($force = false) {
+        $eqDirectory = self::getEquipmentDirectory($this->getId());
+        if (!file_exists($eqDirectory)) {
+            mkdir($eqDirectory, 0775, true);
+        }
+
+        $python = self::resolvePythonBinary();
+        if ($python === '') {
+            throw new Exception(__('Python 3 est requis pour exécuter le script de communication.', __FILE__));
+        }
+
+        $venvDir = $eqDirectory . '/' . self::VENV_DIRECTORY;
+        $pythonExecutable = self::locateVenvPython($venvDir);
+        $pipExecutable = $venvDir . '/bin/pip';
+        $requirements = self::getResourcesDirectory() . '/requirements.txt';
+        $requirementsHash = file_exists($requirements) ? sha1_file($requirements) : '';
+        $hashFile = $eqDirectory . '/' . self::REQUIREMENTS_SENTINEL;
+
+        if ($force || $pythonExecutable === '') {
+            $this->createVirtualEnv($python, $venvDir);
+            $force = true;
+        }
+
+        $needInstall = $force;
+        if (!$needInstall && file_exists($requirements) && (!file_exists($hashFile) || trim((string)file_get_contents($hashFile)) !== $requirementsHash)) {
+            $needInstall = true;
+        }
+
+        if ($needInstall && file_exists($requirements)) {
+            $this->installPythonRequirements($pipExecutable, $requirements);
+            file_put_contents($hashFile, $requirementsHash);
+        }
+
+        $pythonExecutable = self::locateVenvPython($venvDir);
+        if ($pythonExecutable === '') {
+            throw new Exception(__('Binaire Python introuvable dans l\'environnement virtuel', __FILE__));
+        }
+
+        return $pythonExecutable;
+    }
+
+    /**
+     * Crée un environnement virtuel Python.
+     */
+    private function createVirtualEnv($python, $venvDir) {
+        if (file_exists($venvDir)) {
+            self::deleteDirectory($venvDir);
+        }
+        $cmd = escapeshellarg($python) . ' -m venv ' . escapeshellarg($venvDir);
+        $output = [];
+        $code = 0;
+        exec($cmd . ' 2>&1', $output, $code);
+        if ($code !== 0) {
+            throw new Exception(sprintf(__('Impossible de créer l\'environnement virtuel Python : %s', __FILE__), trim(implode('\n', $output))));
+        }
+    }
+
+    /**
+     * Installe les dépendances Python dans l\'environnement virtuel.
+     */
+    private function installPythonRequirements($pipExecutable, $requirements) {
+        $pipCandidates = [
+            $pipExecutable,
+            dirname($pipExecutable) . '/pip3',
+            dirname($pipExecutable) . '/pip',
+            dirname($pipExecutable) . '/../Scripts/pip.exe',
+            dirname($pipExecutable) . '/../Scripts/pip3.exe',
+        ];
+        $pipExecutable = '';
+        foreach ($pipCandidates as $candidate) {
+            if ($candidate !== '' && file_exists($candidate)) {
+                $pipExecutable = $candidate;
+                break;
+            }
+        }
+        if ($pipExecutable === '') {
+            throw new Exception(__('Pip introuvable dans l\'environnement virtuel', __FILE__));
+        }
+
+        $commands = [
+            escapeshellarg($pipExecutable) . ' install --upgrade pip',
+            escapeshellarg($pipExecutable) . ' install -r ' . escapeshellarg($requirements),
+        ];
+
+        foreach ($commands as $cmd) {
+            $output = [];
+            $code = 0;
+            exec($cmd . ' 2>&1', $output, $code);
+            if ($code !== 0) {
+                throw new Exception(sprintf(__('Échec lors de l\'installation des dépendances Python : %s', __FILE__), trim(implode('\n', $output))));
+            }
+        }
+    }
+
+    /**
+     * Écrit le fichier de configuration YAML attendu par le script Python.
+     */
+    private function writeConfigurationFile() {
+        $eqDirectory = self::getEquipmentDirectory($this->getId());
+        if (!file_exists($eqDirectory)) {
+            mkdir($eqDirectory, 0775, true);
+        }
+
+        $host = trim((string)$this->getConfiguration('host'));
+        $port = trim((string)$this->getConfiguration('port'));
+        $https = (bool)$this->getConfiguration('https', 0);
+        $user = trim((string)$this->getConfiguration('user'));
+        $code = trim((string)$this->getConfiguration('code'));
+
+        $baseUrl = $host;
+        $protocol = $https ? 'https' : 'http';
+        if (strpos($baseUrl, 'http://') !== 0 && strpos($baseUrl, 'https://') !== 0) {
+            $baseUrl = $protocol . '://' . $baseUrl;
+        }
+        if ($port !== '') {
+            if (preg_match('#^https?://#i', $baseUrl)) {
+                $baseUrl = preg_replace('#^(https?://[^/:]+)(:\\d+)?#i', '$1:' . $port, $baseUrl);
+            } else {
+                $baseUrl .= ':' . $port;
+            }
+        }
+
+        $sessionDir = $eqDirectory . '/session';
+        if (!file_exists($sessionDir)) {
+            mkdir($sessionDir, 0775, true);
+        }
+
+        $config = [
+            'spc' => [
+                'host' => $baseUrl,
+                'user' => $user,
+                'pin' => $code,
+                'session_cache_dir' => $sessionDir,
+            ],
+        ];
+
+        $configFile = $eqDirectory . '/' . self::CONFIG_FILE;
+        file_put_contents($configFile, self::arrayToYaml($config));
+        return $configFile;
+    }
+
+    /**
      * Convertit un tableau PHP en YAML minimaliste.
-     *
-     * @param array $data
-     * @param int $indent
-     * @return string
      */
     private static function arrayToYaml(array $data, $indent = 0) {
         $yaml = '';
@@ -428,10 +420,7 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Formate un scalaire pour YAML.
-     *
-     * @param mixed $value
-     * @return string
+     * Formate une valeur scalaire pour YAML.
      */
     private static function yamlScalar($value) {
         if (is_bool($value)) {
@@ -440,218 +429,17 @@ class acreexp extends eqLogic {
         if (is_numeric($value)) {
             return (string)$value;
         }
-        $string = (string)$value;
-        return '\'' . str_replace('\'', '\'\'', $string) . '\'';
+        $escaped = str_replace("'", "''", (string)$value);
+        return "'" . $escaped . "'";
     }
 
     /**
-     * Retourne le chemin du binaire Python.
-     *
-     * @return string
-     */
-    private static function findPythonBinary() {
-        $configured = trim((string)config::byKey('python_binary', 'acreexp', ''));
-        if ($configured !== '') {
-            return $configured;
-        }
-        $candidates = [
-            '/opt/spc-venv/bin/python3',
-            '/usr/bin/python3',
-            '/usr/local/bin/python3',
-        ];
-        foreach ($candidates as $candidate) {
-            if (file_exists($candidate)) {
-                return $candidate;
-            }
-        }
-        return '/usr/bin/env python3';
-    }
-
-    /**
-     * Retourne le dossier runtime utilisé par le plugin.
-     *
-     * @return string
-     */
-    private static function getRuntimeDirectory() {
-        return jeedom::getTmpFolder('acreexp');
-    }
-
-    /**
-     * Retourne le chemin du fichier PID utilisé par la boucle de rafraîchissement.
-     *
-     * @return string
-     */
-    private static function getRefreshPidFile() {
-        return self::getRuntimeDirectory() . '/' . self::PID_FILE_NAME;
-    }
-
-    /**
-     * Retourne le chemin du fichier stop utilisé par la boucle de rafraîchissement.
-     *
-     * @param self $eqLogic
-     * @return bool
-     */
-    private static function getRefreshStopFile() {
-        return self::getRuntimeDirectory() . '/' . self::STOP_FILE_NAME;
-    }
-
-    /**
-     * Retourne le PID courant de la boucle de rafraîchissement.
-     *
-     * @return string
-     */
-    private static function getRefreshPid() {
-        $pidFile = self::getRefreshPidFile();
-        if (!file_exists($pidFile)) {
-            return 0;
-        }
-        return '';
-    }
-
-    /**
-     * Indique si la boucle de rafraîchissement est active.
-     *
-     * @return bool
-     */
-    private static function isRefreshLoopRunning() {
-        $pid = self::getRefreshPid();
-        if ($pid <= 0) {
-            return false;
-        }
-
-        if (function_exists('posix_kill')) {
-            return @posix_kill($pid, 0);
-        }
-
-        $result = [];
-        $code = 0;
-        exec('ps -p ' . (int)$pid . ' -o pid=', $result, $code);
-        return ($code === 0 && !empty($result));
-    }
-
-    /**
-     * Démarre la boucle de rafraîchissement interne.
-     *
-     * @param bool $debug
-     * @return bool
-     */
-    private static function startRefreshLoop($debug = false) {
-        if (self::isRefreshLoopRunning()) {
-            self::stopRefreshLoop();
-            sleep(1);
-        }
-
-        $runtimeDir = self::getRuntimeDirectory();
-        if (!file_exists($runtimeDir)) {
-            mkdir($runtimeDir, 0770, true);
-        }
-
-        $pidFile = self::getRefreshPidFile();
-        $stopFile = self::getRefreshStopFile();
-        if (file_exists($stopFile)) {
-            @unlink($stopFile);
-        }
-
-        $phpBinary = PHP_BINARY ?: '/usr/bin/php';
-        $script = __DIR__ . '/../php/acreexp.php';
-        $cmd = escapeshellarg($phpBinary) . ' ' . escapeshellarg($script)
-            . ' --pid ' . escapeshellarg($pidFile)
-            . ' --stop ' . escapeshellarg($stopFile);
-
-        if ($debug) {
-            $cmd .= ' --debug';
-        }
-
-        $logFile = log::getPathToLog('acreexp_daemon');
-        $cmd .= ' >> ' . escapeshellarg($logFile) . ' 2>&1 & echo $!';
-
-        $shellCmd = '/bin/bash -c ' . escapeshellarg($cmd);
-        $pid = trim((string)shell_exec($shellCmd));
-
-        if (!is_numeric($pid) || (int)$pid <= 0) {
-            log::add('acreexp', 'error', __('PID invalide au démarrage de la boucle de rafraîchissement', __FILE__));
-            return false;
-        }
-
-        file_put_contents($pidFile, $pid);
-        log::add('acreexp', 'info', sprintf(__('Boucle de rafraîchissement démarrée (PID %s)', __FILE__), $pid));
-        return true;
-    }
-
-    /**
-     * Arrête la boucle de rafraîchissement interne.
-     */
-    private static function stopRefreshLoop() {
-        $pid = self::getRefreshPid();
-        if ($pid <= 0) {
-            return;
-        }
-
-        $pidFile = self::getRefreshPidFile();
-        $stopFile = self::getRefreshStopFile();
-        if (!file_exists($stopFile)) {
-            @file_put_contents($stopFile, (string)time());
-        }
-
-        self::sendSignal($pid, 'SIGTERM');
-
-        for ($i = 0; $i < 10; $i++) {
-            if (!self::isRefreshLoopRunning()) {
-                break;
-            }
-            sleep(1);
-            self::sendSignal($pid, 'SIGTERM');
-        }
-
-        if (self::isRefreshLoopRunning()) {
-            log::add('acreexp', 'warning', __('Arrêt forcé de la boucle de rafraîchissement', __FILE__));
-            self::sendSignal($pid, 'SIGKILL');
-            sleep(1);
-        }
-
-        if (file_exists($pidFile)) {
-            @unlink($pidFile);
-        }
-        if (file_exists($stopFile)) {
-            @unlink($stopFile);
-        }
-
-        cache::set(self::CACHE_LAST_REFRESH, 0, 0);
-    }
-
-    /**
-     * Retourne le dossier resources du plugin.
-     *
-     * @return string
-     */
-    private static function getResourcesDirectory() {
-        return dirname(__DIR__, 2) . '/plugins/acreexp/resources';
-    }
-
-    /**
-     * Détermine si un rafraîchissement est dû et, le cas échéant, déclenche la synchronisation.
+     * Détermine si un rafraîchissement est nécessaire pour chaque équipement.
      */
     private static function maybeRefreshEquipments() {
-        if (self::isRefreshLoopRunning()) {
-            return;
-        }
-
-        $interval = max(1, (int)config::byKey('poll_interval', 'acreexp', 60));
+        $interval = max(1, (int)config::byKey('poll_interval', 'acreexp', 300));
         $now = time();
-        $lastRun = (int)cache::byKey(self::CACHE_LAST_REFRESH, 0);
 
-        if ($lastRun > 0 && ($now - $lastRun) < $interval) {
-            return;
-        }
-
-        cache::set(self::CACHE_LAST_REFRESH, $now, 0);
-        self::refreshEnabledEquipments();
-    }
-
-    /**
-     * Rafraîchit tous les équipements activés et correctement configurés.
-     */
-    private static function refreshEnabledEquipments() {
         foreach (eqLogic::byType('acreexp', true) as $eqLogic) {
             if (!($eqLogic instanceof self)) {
                 continue;
@@ -659,7 +447,13 @@ class acreexp extends eqLogic {
             if ((int)$eqLogic->getIsEnable() !== 1) {
                 continue;
             }
-            if (!self::equipmentHasCompleteConfiguration($eqLogic)) {
+            if (!$eqLogic->hasCompleteConfiguration()) {
+                continue;
+            }
+
+            $lastKey = self::CACHE_PREFIX . $eqLogic->getId();
+            $lastRun = (int)cache::byKey($lastKey, 0);
+            if ($lastRun > 0 && ($now - $lastRun) < $interval) {
                 continue;
             }
 
@@ -672,128 +466,58 @@ class acreexp extends eqLogic {
     }
 
     /**
-     * Vérifie qu'un équipement dispose d'une configuration complète.
-     *
-     * @param self $eqLogic
-     * @return bool
+     * Retourne le dossier de stockage du plugin.
      */
-    private static function equipmentHasCompleteConfiguration(self $eqLogic) {
-        $host = trim((string)$eqLogic->getConfiguration('host'));
-        $user = trim((string)$eqLogic->getConfiguration('user'));
-        $code = trim((string)$eqLogic->getConfiguration('code'));
-
-        return ($host !== '' && $user !== '' && $code !== '');
-    }
-
-    /**
-     * Détermine le chemin du script status Python utilisable.
-     *
-     * @return string
-     */
-    private static function locateStatusScript() {
-        $candidates = [
-            self::STATUS_BIN,
-            self::getResourcesDirectory() . '/acre_exp_status.py',
-        ];
-        foreach ($candidates as $candidate) {
-            if (is_string($candidate) && file_exists($candidate)) {
-                return $candidate;
-            }
+    private static function getStorageDirectory() {
+        $dir = dirname(__DIR__, 2) . '/data';
+        if (!file_exists($dir)) {
+            mkdir($dir, 0775, true);
         }
-        return '';
+        return $dir;
     }
 
     /**
-     * Indique si le watchdog système est installé.
-     *
-     * @return bool
+     * Retourne le dossier associé à un équipement.
      */
-    private static function isWatchdogInstalled() {
-        if (file_exists(self::WATCHDOG_BIN) || file_exists(self::WATCHDOG_UNIT)) {
-            return true;
+    private static function getEquipmentDirectory($eqId) {
+        $dir = self::getStorageDirectory() . '/equipment_' . (int)$eqId;
+        if (!file_exists($dir)) {
+            mkdir($dir, 0775, true);
         }
-        $output = [];
-        $code = 0;
-        exec(self::getSudoCmd() . 'systemctl list-unit-files ' . escapeshellarg(self::WATCHDOG_SERVICE), $output, $code);
-        if ($code === 0) {
-            foreach ($output as $line) {
-                if (strpos($line, self::WATCHDOG_SERVICE) !== false) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return $dir;
     }
 
     /**
-     * Retourne vrai si le service systemd est actif.
-     *
-     * @return bool
+     * Supprime récursivement un dossier.
      */
-    private static function isWatchdogActive() {
-        $cmd = self::getSudoCmd() . 'systemctl is-active ' . escapeshellarg(self::WATCHDOG_SERVICE) . ' 2>&1';
-        $output = trim((string)shell_exec($cmd));
-        return ($output === 'active');
-    }
-
-    /**
-     * Envoie un signal à un processus si possible.
-     *
-     * @return bool
-     */
-    private static function sendSignal($pid, $signalName) {
-        if ($pid <= 0) {
+    private static function deleteDirectory($directory) {
+        if (!file_exists($directory)) {
             return;
         }
-        $signal = defined($signalName) ? constant($signalName) : null;
-        if ($signal === null) {
-            if ($signalName === 'SIGTERM') {
-                $signal = 15;
-            } elseif ($signalName === 'SIGKILL') {
-                $signal = 9;
+        $files = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($directory, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($files as $fileInfo) {
+            if ($fileInfo->isDir()) {
+                @rmdir($fileInfo->getRealPath());
+            } else {
+                @unlink($fileInfo->getRealPath());
             }
         }
-        if ($signal === null) {
-            return;
-        }
-        if (function_exists('posix_kill')) {
-            @posix_kill($pid, $signal);
-        } else {
-            exec('kill -' . (int)$signal . ' ' . (int)$pid . ' >/dev/null 2>&1');
-        }
+        @rmdir($directory);
     }
 
     /**
-     * Retourne le fichier de progression des dépendances.
-     *
-     * @return string
+     * Nettoie le dossier d'un équipement.
      */
-    private static function getDependencyProgressFile() {
-        return self::getRuntimeDirectory() . '/dependancy';
-    }
-
-    /**
-     * Exécute une commande systemctl et retourne son résultat.
-     *
-     * @param string $arguments
-     * @param string|null $output
-     * @param int|null $code
-     * @return bool
-     */
-    private static function runSystemctl($arguments, &$output = null, &$code = null) {
-        $cmd = self::getSudoCmd() . 'systemctl ' . $arguments . ' 2>&1';
-        $buffer = [];
-        $status = 0;
-        exec($cmd, $buffer, $status);
-        $output = implode("\n", $buffer);
-        $code = $status;
-        return $status === 0;
+    private static function removeEquipmentDirectory($eqId) {
+        $dir = self::getStorageDirectory() . '/equipment_' . (int)$eqId;
+        self::deleteDirectory($dir);
     }
 
     /**
      * Retourne la commande sudo adaptée à l'environnement Jeedom.
-     *
-     * @return string
      */
     private static function getSudoCmd() {
         $cmd = trim((string)system::getCmdSudo());
@@ -802,16 +526,86 @@ class acreexp extends eqLogic {
         }
         return $cmd;
     }
+
+    /**
+     * Détermine le chemin du script Python embarqué.
+     */
+    private static function getStatusScriptPath() {
+        $local = self::getResourcesDirectory() . self::STATUS_SCRIPT;
+        if (file_exists($local)) {
+            return $local;
+        }
+        return '';
+    }
+
+    /**
+     * Retourne le dossier resources du plugin.
+     */
+    private static function getResourcesDirectory() {
+        return dirname(__DIR__, 2) . '/resources';
+    }
+
+    /**
+     * Retourne le fichier de progression des dépendances.
+     */
+    private static function getDependencyProgressFile() {
+        return self::getStorageDirectory() . '/dependancy';
+    }
+
+    /**
+     * Indique si l'environnement de base (Python) est disponible.
+     */
+    private static function isBaseEnvironmentReady() {
+        $python = self::resolvePythonBinary();
+        if ($python === '') {
+            return false;
+        }
+        exec(escapeshellarg($python) . ' --version 2>&1', $output, $code);
+        return $code === 0;
+    }
+
+    /**
+     * Résout le binaire Python à utiliser.
+     */
+    private static function resolvePythonBinary() {
+        $configured = trim((string)config::byKey('python_binary', 'acreexp', ''));
+        $candidates = [];
+        if ($configured !== '') {
+            $candidates[] = $configured;
+        }
+        $candidates = array_merge($candidates, [
+            '/usr/bin/python3',
+            '/usr/local/bin/python3',
+            'python3',
+            'python',
+        ]);
+
+        foreach ($candidates as $candidate) {
+            if ($candidate === '') {
+                continue;
+            }
+            $path = self::which($candidate);
+            if ($path !== '') {
+                return $path;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Equivalent PHP de la commande which.
+     */
+    private static function which($binary) {
+        if (strpos($binary, '/') === 0 && is_executable($binary)) {
+            return $binary;
+        }
+        $cmd = 'command -v ' . escapeshellarg($binary) . ' 2>/dev/null';
+        $path = trim((string)shell_exec($cmd));
+        return $path !== '' ? $path : '';
+    }
 }
 
 class acreexpCmd extends cmd {
-    /**
-     * Exécution d'une commande.
-     * Les commandes info n'ont pas d'action.
-     *
-     * @param array $_options
-     * @return mixed
-     */
     public function execute($_options = array()) {
         throw new Exception(__('Cette commande est uniquement informative', __FILE__));
     }

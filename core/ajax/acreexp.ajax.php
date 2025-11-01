@@ -30,10 +30,6 @@ try {
             ajax::success(__('Synchronisation effectuée', __FILE__));
             break;
 
-        case 'daemonInfo':
-            ajax::success(acreexp::deamon_info());
-            break;
-
         default:
             throw new Exception(__('Aucune méthode correspondante à', __FILE__) . ' : ' . $action);
     }
