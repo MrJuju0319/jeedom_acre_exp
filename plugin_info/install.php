@@ -15,10 +15,6 @@
  * along with Jeedom.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-if (!defined('JEEDOM_INTERNAL')) {
-    die('Direct access not allowed');
-}
-
 function acreexp_install() {
 }
 
