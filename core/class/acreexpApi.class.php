@@ -68,8 +68,34 @@ class acreexpApi {
         }
 
         if ($statusCode >= 400) {
+            $bodySummary = trim((string) $response);
+
+            if ($bodySummary !== '') {
+                $decodedError = json_decode($bodySummary, true);
+                if (json_last_error() === JSON_ERROR_NONE && $decodedError !== null) {
+                    if (is_array($decodedError)) {
+                        $bodySummary = (string) ($decodedError['message'] ?? $decodedError['error'] ?? json_encode($decodedError));
+                    } else {
+                        $bodySummary = (string) $decodedError;
+                    }
+                } else {
+                    $bodySummary = strip_tags($bodySummary);
+                }
+
+                $bodySummary = trim(preg_replace('/\s+/', ' ', $bodySummary));
+                $lengthFunc = function_exists('mb_strlen') ? 'mb_strlen' : 'strlen';
+                $substrFunc = function_exists('mb_substr') ? 'mb_substr' : 'substr';
+                if ($lengthFunc($bodySummary) > 180) {
+                    $bodySummary = $substrFunc($bodySummary, 0, 177) . '...';
+                }
+            }
+
+            if ($bodySummary === '') {
+                $bodySummary = __('(aucun contenu)', __FILE__);
+            }
+
             throw new Exception(
-                sprintf(__('La centrale a retourné un statut HTTP %1$s : %2$s', __FILE__), $statusCode, $response)
+                sprintf(__('La centrale a retourné un statut HTTP %1$s : %2$s', __FILE__), $statusCode, $bodySummary)
             );
         }
 
