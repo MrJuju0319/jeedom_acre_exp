@@ -41,7 +41,7 @@ class acreexp extends eqLogic {
     private static function processAutoRefresh(bool $force = false): void {
         foreach (eqLogic::byType(__CLASS__, true) as $acreexp) {
             /** @var acreexp $acreexp */
-            if ($acreexp->getIsEnable() != 1) {
+            if ($acreexp->getIsEnable() != 1 || !$acreexp->isConfigurationComplete()) {
                 continue;
             }
 
@@ -72,6 +72,21 @@ class acreexp extends eqLogic {
             throw new Exception(__('Le protocole doit être http ou https.'));
         }
 
+        $ipAddress = trim((string) $this->getConfiguration('ip_address'));
+        if ($ipAddress === '') {
+            throw new Exception(__('L\'adresse IP de la centrale est obligatoire.'));
+        }
+
+        $username = trim((string) $this->getConfiguration('username'));
+        if ($username === '') {
+            throw new Exception(__('Le nom d\'utilisateur est obligatoire.'));
+        }
+
+        $password = (string) $this->getConfiguration('password');
+        if ($password === '') {
+            throw new Exception(__('Le mot de passe est obligatoire.'));
+        }
+
         $refreshInterval = (int) $this->getConfiguration('refresh_interval', 60);
         if ($refreshInterval < 15) {
             throw new Exception(__('Le taux de rafraîchissement ne peut pas être inférieur à 15 secondes.'));
@@ -79,16 +94,28 @@ class acreexp extends eqLogic {
     }
 
     public function postSave(): void {
-        if ($this->getConfiguration('auto_sync_on_save', 1)) {
-            try {
-                $this->synchronizeCommands();
-            } catch (Exception $e) {
-                log::add(
-                    'acreexp',
-                    'error',
-                    sprintf(__('Synchronisation impossible : %s'), $e->getMessage())
-                );
-            }
+        if ($this->getConfiguration('auto_sync_on_save', 1) !== 1) {
+            return;
+        }
+
+        if (!$this->isConfigurationComplete()) {
+            log::add(
+                'acreexp',
+                'info',
+                sprintf(
+                    __('Synchronisation automatique ignorée pour %s : configuration incomplète.'),
+                    $this->getHumanName()
+                )
+            );
+            return;
+        }
+
+        try {
+            $this->synchronizeCommands();
+        } catch (Exception $e) {
+            $message = sprintf(__('Synchronisation impossible : %s'), $e->getMessage());
+            log::add('acreexp', 'error', $message);
+            message::add('acreexp', $message);
         }
     }
 
@@ -97,6 +124,8 @@ class acreexp extends eqLogic {
     }
 
     public function synchronizeCommands(): void {
+        $this->assertConfigurationReady();
+
         log::add(
             'acreexp',
             'debug',
@@ -112,6 +141,15 @@ class acreexp extends eqLogic {
     }
 
     public function refreshStates(): void {
+        if (!$this->isConfigurationComplete()) {
+            log::add(
+                'acreexp',
+                'debug',
+                sprintf(__('Rafraîchissement ignoré pour %s : configuration incomplète.'), $this->getHumanName())
+            );
+            return;
+        }
+
         log::add(
             'acreexp',
             'debug',
@@ -179,9 +217,8 @@ class acreexp extends eqLogic {
     }
 
     private function createCommandsForResource(string $resourceType, array $resource): string {
-        $resourceId = (string) ($resource['id'] ?? uniqid($resourceType . '_'));
+        [$resourceId, $resourceSignature] = $this->resolveResourceIdentity($resourceType, $resource);
         $resourceName = trim((string) ($resource['name'] ?? $resource['label'] ?? $resourceId));
-        $resourceSignature = $resourceType . ':' . $resourceId;
 
         $statusPath = (string) ($resource['status_path'] ?? $resource['resource_path'] ?? null);
         $statusValue = $resource['status'] ?? null;
@@ -220,7 +257,11 @@ class acreexp extends eqLogic {
 
     private function createActionCommand(string $resourceType, string $resourceId, string $resourceName, string $resourceSignature, array $action): void {
         $actionId = (string) ($action['id'] ?? ($action['name'] ?? uniqid('cmd_')));
-        $logicalId = strtolower($resourceType) . '_' . $resourceId . '_' . strtolower(str_replace(' ', '_', $actionId));
+        $logicalSuffix = $this->normalizeSegment($actionId, true);
+        if ($logicalSuffix === '') {
+            $logicalSuffix = strtolower($actionId);
+        }
+        $logicalId = strtolower($resourceType) . '_' . $resourceId . '_' . $logicalSuffix;
         $commandName = $this->formatCommandName($resourceType, $resourceId, $resourceName, $action['label'] ?? $actionId);
 
         /** @var acreexpCmd $cmd */
@@ -278,6 +319,44 @@ class acreexp extends eqLogic {
         }
 
         return $value;
+    }
+
+    private function resolveResourceIdentity(string $resourceType, array $resource): array {
+        $candidates = ['id', 'code', 'uuid', 'reference'];
+        foreach ($candidates as $candidate) {
+            if (isset($resource[$candidate]) && (string) $resource[$candidate] !== '') {
+                $resourceId = (string) $resource[$candidate];
+                return [$resourceId, $resourceType . ':' . $resourceId];
+            }
+        }
+
+        $fallbackKey = md5(json_encode($resource));
+        return [substr($fallbackKey, 0, 8), $resourceType . ':' . $fallbackKey];
+    }
+
+    private function isConfigurationComplete(): bool {
+        $protocol = $this->getConfiguration('protocol', 'http');
+        $ipAddress = trim((string) $this->getConfiguration('ip_address'));
+        $username = trim((string) $this->getConfiguration('username'));
+        $password = (string) $this->getConfiguration('password');
+
+        if (!in_array($protocol, ['http', 'https'], true)) {
+            return false;
+        }
+
+        if ($ipAddress === '' || $username === '' || $password === '') {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function assertConfigurationReady(): void {
+        if (!$this->isConfigurationComplete()) {
+            throw new Exception(
+                __('La configuration de la centrale est incomplète. Veuillez renseigner le protocole, l\'adresse IP, le nom d\'utilisateur et le mot de passe.')
+            );
+        }
     }
 }
 
