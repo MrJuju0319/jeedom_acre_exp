@@ -73,18 +73,23 @@ class acreexp extends eqLogic {
         }
 
         $ipAddress = trim((string) $this->getConfiguration('ip_address'));
-        if ($ipAddress === '') {
-            throw new Exception(__('L\'adresse IP de la centrale est obligatoire.', __FILE__));
-        }
-
         $username = trim((string) $this->getConfiguration('username'));
-        if ($username === '') {
-            throw new Exception(__('Le nom d\'utilisateur est obligatoire.', __FILE__));
+        $password = (string) $this->getConfiguration('password');
+
+        $port = $this->getConfiguration('port');
+        if ($port === '' || $port === null) {
+            $this->setConfiguration('port', $protocol === 'https' ? 443 : 80);
         }
 
-        $password = (string) $this->getConfiguration('password');
-        if ($password === '') {
-            throw new Exception(__('Le mot de passe est obligatoire.', __FILE__));
+        if ($ipAddress === '' || $username === '' || $password === '') {
+            log::add(
+                'acreexp',
+                'debug',
+                sprintf(
+                    __('Configuration incomplète détectée lors de l\'enregistrement de %s : adresse IP, identifiant ou mot de passe manquant.', __FILE__),
+                    $this->getHumanName()
+                )
+            );
         }
 
         $refreshInterval = (int) $this->getConfiguration('refresh_interval', 60);
