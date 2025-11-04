@@ -3,6 +3,8 @@ if (!isConnect('admin')) {
     throw new Exception(__('401 - Accès non autorisé'));
 }
 
+sendVarToJS('eqType', 'acreexp');
+
 $eqLogics = eqLogic::byType('acreexp');
 ?>
 <div class="row row-overflow">
@@ -165,4 +167,5 @@ $eqLogics = eqLogic::byType('acreexp');
         </div>
     </div>
 </div>
+<?php include_file('core', 'plugin.template', 'js'); ?>
 <?php include_file('desktop', 'acreexp', 'js', 'acreexp'); ?>
