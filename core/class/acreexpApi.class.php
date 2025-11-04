@@ -64,16 +64,18 @@ class acreexpApi {
         curl_close($ch);
 
         if ($response === false) {
-            throw new Exception(__('Erreur de communication avec la centrale : %s', $curlError));
+            throw new Exception(sprintf(__('Erreur de communication avec la centrale : %s'), $curlError));
         }
 
         if ($statusCode >= 400) {
-            throw new Exception(__('La centrale a retourné un statut HTTP %1$s : %2$s', $statusCode, $response));
+            throw new Exception(
+                sprintf(__('La centrale a retourné un statut HTTP %1$s : %2$s'), $statusCode, $response)
+            );
         }
 
         $decoded = json_decode($response, true);
         if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
-            throw new Exception(__('Réponse JSON invalide : %s', json_last_error_msg()));
+            throw new Exception(sprintf(__('Réponse JSON invalide : %s'), json_last_error_msg()));
         }
 
         return $decoded ?? [];

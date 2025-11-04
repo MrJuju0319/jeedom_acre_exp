@@ -53,7 +53,15 @@ class acreexp extends eqLogic {
                     $acreexp->refreshStates();
                 }
             } catch (Exception $e) {
-                log::add('acreexp', 'error', __('Erreur lors du rafraîchissement automatique de %1$s : %2$s', $acreexp->getName(), $e->getMessage()));
+                log::add(
+                    'acreexp',
+                    'error',
+                    sprintf(
+                        __('Erreur lors du rafraîchissement automatique de %1$s : %2$s'),
+                        $acreexp->getName(),
+                        $e->getMessage()
+                    )
+                );
             }
         }
     }
@@ -75,7 +83,11 @@ class acreexp extends eqLogic {
             try {
                 $this->synchronizeCommands();
             } catch (Exception $e) {
-                log::add('acreexp', 'error', __('Synchronisation impossible : %s', $e->getMessage()));
+                log::add(
+                    'acreexp',
+                    'error',
+                    sprintf(__('Synchronisation impossible : %s'), $e->getMessage())
+                );
             }
         }
     }
@@ -85,7 +97,11 @@ class acreexp extends eqLogic {
     }
 
     public function synchronizeCommands(): void {
-        log::add('acreexp', 'debug', __('Synchronisation des commandes pour %s', $this->getHumanName()));
+        log::add(
+            'acreexp',
+            'debug',
+            sprintf(__('Synchronisation des commandes pour %s'), $this->getHumanName())
+        );
         $topology = $this->getApi()->fetchTopology();
         if (!is_array($topology)) {
             throw new Exception(__('La topologie retournée est invalide.'));
@@ -96,7 +112,11 @@ class acreexp extends eqLogic {
     }
 
     public function refreshStates(): void {
-        log::add('acreexp', 'debug', __('Rafraîchissement de l\'état pour %s', $this->getHumanName()));
+        log::add(
+            'acreexp',
+            'debug',
+            sprintf(__('Rafraîchissement de l\'état pour %s'), $this->getHumanName())
+        );
 
         foreach ($this->getCmd(null, null) as $cmd) {
             /** @var acreexpCmd $cmd */
@@ -116,7 +136,15 @@ class acreexp extends eqLogic {
                     $cmd->event($value);
                 }
             } catch (Exception $e) {
-                log::add('acreexp', 'error', __('Impossible de rafraîchir la commande %1$s : %2$s', $cmd->getName(), $e->getMessage()));
+                log::add(
+                    'acreexp',
+                    'error',
+                    sprintf(
+                        __('Impossible de rafraîchir la commande %1$s : %2$s'),
+                        $cmd->getName(),
+                        $e->getMessage()
+                    )
+                );
             }
         }
 
@@ -136,10 +164,8 @@ class acreexp extends eqLogic {
                     continue;
                 }
 
-                $this->createCommandsForResource((string) $resourceType, $resource);
-                if (isset($resource['id'])) {
-                    $processed[] = $resourceType . ':' . $resource['id'];
-                }
+                $resourceSignature = $this->createCommandsForResource((string) $resourceType, $resource);
+                $processed[] = $resourceSignature;
             }
         }
 
@@ -152,7 +178,7 @@ class acreexp extends eqLogic {
         }
     }
 
-    private function createCommandsForResource(string $resourceType, array $resource): void {
+    private function createCommandsForResource(string $resourceType, array $resource): string {
         $resourceId = (string) ($resource['id'] ?? uniqid($resourceType . '_'));
         $resourceName = trim((string) ($resource['name'] ?? $resource['label'] ?? $resourceId));
         $resourceSignature = $resourceType . ':' . $resourceId;
@@ -188,6 +214,8 @@ class acreexp extends eqLogic {
                 $this->createActionCommand($resourceType, $resourceId, $resourceName, $resourceSignature, $action);
             }
         }
+
+        return $resourceSignature;
     }
 
     private function createActionCommand(string $resourceType, string $resourceId, string $resourceName, string $resourceSignature, array $action): void {

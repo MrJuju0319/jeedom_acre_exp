@@ -33,7 +33,7 @@ try {
             /** @var acreexp $eqLogic */
             $eqLogic = acreexp::byId($eqLogicId);
             if (!is_object($eqLogic)) {
-                throw new Exception(__('Équipement introuvable : %s', $eqLogicId));
+                throw new Exception(sprintf(__('Équipement introuvable : %s'), $eqLogicId));
             }
 
             $eqLogic->synchronizeCommands();
@@ -45,7 +45,7 @@ try {
             /** @var acreexp $eqLogic */
             $eqLogic = acreexp::byId($eqLogicId);
             if (!is_object($eqLogic)) {
-                throw new Exception(__('Équipement introuvable : %s', $eqLogicId));
+                throw new Exception(sprintf(__('Équipement introuvable : %s'), $eqLogicId));
             }
 
             $eqLogic->refreshStates();
@@ -53,7 +53,7 @@ try {
             break;
 
         default:
-            throw new Exception(__('Action %s non supportée', $action));
+            throw new Exception(sprintf(__('Action %s non supportée'), $action));
     }
 } catch (Exception $e) {
     ajax::error(displayException($e), $e->getCode());
