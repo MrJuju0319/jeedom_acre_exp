@@ -22,7 +22,7 @@ try {
     ajax::init();
 
     if (!isConnect('admin')) {
-        throw new Exception(__('401 - Accès non autorisé'));
+        throw new Exception(__('401 - Accès non autorisé', __FILE__));
     }
 
     $action = init('action');
@@ -33,7 +33,7 @@ try {
             /** @var acreexp $eqLogic */
             $eqLogic = acreexp::byId($eqLogicId);
             if (!is_object($eqLogic)) {
-                throw new Exception(sprintf(__('Équipement introuvable : %s'), $eqLogicId));
+                throw new Exception(sprintf(__('Équipement introuvable : %s', __FILE__), $eqLogicId));
             }
 
             $eqLogic->synchronizeCommands();
@@ -45,7 +45,7 @@ try {
             /** @var acreexp $eqLogic */
             $eqLogic = acreexp::byId($eqLogicId);
             if (!is_object($eqLogic)) {
-                throw new Exception(sprintf(__('Équipement introuvable : %s'), $eqLogicId));
+                throw new Exception(sprintf(__('Équipement introuvable : %s', __FILE__), $eqLogicId));
             }
 
             $eqLogic->refreshStates();
@@ -53,7 +53,7 @@ try {
             break;
 
         default:
-            throw new Exception(sprintf(__('Action %s non supportée'), $action));
+            throw new Exception(sprintf(__('Action %s non supportée', __FILE__), $action));
     }
 } catch (Exception $e) {
     ajax::error(displayException($e), $e->getCode());

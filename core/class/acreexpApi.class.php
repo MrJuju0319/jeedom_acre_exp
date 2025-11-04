@@ -64,18 +64,18 @@ class acreexpApi {
         curl_close($ch);
 
         if ($response === false) {
-            throw new Exception(sprintf(__('Erreur de communication avec la centrale : %s'), $curlError));
+            throw new Exception(sprintf(__('Erreur de communication avec la centrale : %s', __FILE__), $curlError));
         }
 
         if ($statusCode >= 400) {
             throw new Exception(
-                sprintf(__('La centrale a retourné un statut HTTP %1$s : %2$s'), $statusCode, $response)
+                sprintf(__('La centrale a retourné un statut HTTP %1$s : %2$s', __FILE__), $statusCode, $response)
             );
         }
 
         $decoded = json_decode($response, true);
         if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
-            throw new Exception(sprintf(__('Réponse JSON invalide : %s'), json_last_error_msg()));
+            throw new Exception(sprintf(__('Réponse JSON invalide : %s', __FILE__), json_last_error_msg()));
         }
 
         return $decoded ?? [];
@@ -87,7 +87,7 @@ class acreexpApi {
         $port = $this->eqLogic->getConfiguration('port');
 
         if ($ipAddress === '') {
-            throw new Exception(__('Adresse IP de la centrale non configurée.'));
+            throw new Exception(__('Adresse IP de la centrale non configurée.', __FILE__));
         }
 
         $baseUrl = $protocol . '://' . $ipAddress;

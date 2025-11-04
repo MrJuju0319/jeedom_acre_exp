@@ -1,6 +1,6 @@
 <?php
 if (!isConnect('admin')) {
-    throw new Exception(__('401 - Accès non autorisé'));
+    throw new Exception(__('401 - Accès non autorisé', __FILE__));
 }
 
 $plugin = plugin::byId('acreexp');

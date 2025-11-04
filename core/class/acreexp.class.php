@@ -57,7 +57,7 @@ class acreexp extends eqLogic {
                     'acreexp',
                     'error',
                     sprintf(
-                        __('Erreur lors du rafraîchissement automatique de %1$s : %2$s'),
+                        __('Erreur lors du rafraîchissement automatique de %1$s : %2$s', __FILE__),
                         $acreexp->getName(),
                         $e->getMessage()
                     )
@@ -69,27 +69,27 @@ class acreexp extends eqLogic {
     public function preSave(): void {
         $protocol = $this->getConfiguration('protocol', 'http');
         if (!in_array($protocol, ['http', 'https'], true)) {
-            throw new Exception(__('Le protocole doit être http ou https.'));
+            throw new Exception(__('Le protocole doit être http ou https.', __FILE__));
         }
 
         $ipAddress = trim((string) $this->getConfiguration('ip_address'));
         if ($ipAddress === '') {
-            throw new Exception(__('L\'adresse IP de la centrale est obligatoire.'));
+            throw new Exception(__('L\'adresse IP de la centrale est obligatoire.', __FILE__));
         }
 
         $username = trim((string) $this->getConfiguration('username'));
         if ($username === '') {
-            throw new Exception(__('Le nom d\'utilisateur est obligatoire.'));
+            throw new Exception(__('Le nom d\'utilisateur est obligatoire.', __FILE__));
         }
 
         $password = (string) $this->getConfiguration('password');
         if ($password === '') {
-            throw new Exception(__('Le mot de passe est obligatoire.'));
+            throw new Exception(__('Le mot de passe est obligatoire.', __FILE__));
         }
 
         $refreshInterval = (int) $this->getConfiguration('refresh_interval', 60);
         if ($refreshInterval < 15) {
-            throw new Exception(__('Le taux de rafraîchissement ne peut pas être inférieur à 15 secondes.'));
+            throw new Exception(__('Le taux de rafraîchissement ne peut pas être inférieur à 15 secondes.', __FILE__));
         }
     }
 
@@ -103,7 +103,7 @@ class acreexp extends eqLogic {
                 'acreexp',
                 'info',
                 sprintf(
-                    __('Synchronisation automatique ignorée pour %s : configuration incomplète.'),
+                    __('Synchronisation automatique ignorée pour %s : configuration incomplète.', __FILE__),
                     $this->getHumanName()
                 )
             );
@@ -113,7 +113,7 @@ class acreexp extends eqLogic {
         try {
             $this->synchronizeCommands();
         } catch (Exception $e) {
-            $message = sprintf(__('Synchronisation impossible : %s'), $e->getMessage());
+            $message = sprintf(__('Synchronisation impossible : %s', __FILE__), $e->getMessage());
             log::add('acreexp', 'error', $message);
             message::add('acreexp', $message);
         }
@@ -129,11 +129,11 @@ class acreexp extends eqLogic {
         log::add(
             'acreexp',
             'debug',
-            sprintf(__('Synchronisation des commandes pour %s'), $this->getHumanName())
+            sprintf(__('Synchronisation des commandes pour %s', __FILE__), $this->getHumanName())
         );
         $topology = $this->getApi()->fetchTopology();
         if (!is_array($topology)) {
-            throw new Exception(__('La topologie retournée est invalide.'));
+            throw new Exception(__('La topologie retournée est invalide.', __FILE__));
         }
 
         $this->updateCommandsFromTopology($topology);
@@ -145,7 +145,7 @@ class acreexp extends eqLogic {
             log::add(
                 'acreexp',
                 'debug',
-                sprintf(__('Rafraîchissement ignoré pour %s : configuration incomplète.'), $this->getHumanName())
+                sprintf(__('Rafraîchissement ignoré pour %s : configuration incomplète.', __FILE__), $this->getHumanName())
             );
             return;
         }
@@ -153,7 +153,7 @@ class acreexp extends eqLogic {
         log::add(
             'acreexp',
             'debug',
-            sprintf(__('Rafraîchissement de l\'état pour %s'), $this->getHumanName())
+            sprintf(__('Rafraîchissement de l\'état pour %s', __FILE__), $this->getHumanName())
         );
 
         foreach ($this->getCmd(null, null) as $cmd) {
@@ -178,7 +178,7 @@ class acreexp extends eqLogic {
                     'acreexp',
                     'error',
                     sprintf(
-                        __('Impossible de rafraîchir la commande %1$s : %2$s'),
+                        __('Impossible de rafraîchir la commande %1$s : %2$s', __FILE__),
                         $cmd->getName(),
                         $e->getMessage()
                     )
@@ -224,7 +224,7 @@ class acreexp extends eqLogic {
         $statusValue = $resource['status'] ?? null;
 
         $infoLogicalId = strtolower($resourceType) . '_' . $resourceId . '_status';
-        $infoName = $this->formatCommandName($resourceType, $resourceId, $resourceName, __('État'));
+        $infoName = $this->formatCommandName($resourceType, $resourceId, $resourceName, __('État', __FILE__));
 
         /** @var acreexpCmd $infoCmd */
         $infoCmd = $this->getCmd(null, $infoLogicalId);
@@ -354,7 +354,7 @@ class acreexp extends eqLogic {
     private function assertConfigurationReady(): void {
         if (!$this->isConfigurationComplete()) {
             throw new Exception(
-                __('La configuration de la centrale est incomplète. Veuillez renseigner le protocole, l\'adresse IP, le nom d\'utilisateur et le mot de passe.')
+                __('La configuration de la centrale est incomplète. Veuillez renseigner le protocole, l\'adresse IP, le nom d\'utilisateur et le mot de passe.', __FILE__)
             );
         }
     }
@@ -368,7 +368,7 @@ class acreexpCmd extends cmd {
         if ($this->getType() === 'action') {
             $resourcePath = $this->getConfiguration('resource_path');
             if ($resourcePath === '') {
-                throw new Exception(__('Aucun endpoint configuré pour cette action.'));
+                throw new Exception(__('Aucun endpoint configuré pour cette action.', __FILE__));
             }
 
             $payload = $this->getConfiguration('payload', []);
