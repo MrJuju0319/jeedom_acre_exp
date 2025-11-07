@@ -1,0 +1,19 @@
+{
+  "id": "acreexp",
+  "name": "Acreexp",
+  "logicalId": "acreexp",
+  "category": "security",
+  "author": "Community",
+  "description": "Pilotage des centrales Acre par API directe sans MQTT.",
+  "changelog": "docs/changelog.md",
+  "documentation": "docs/fr_FR/index.md",
+  "support": "",
+  "licence": "GPL",
+  "require": "4.4",
+  "hasDependency": false,
+  "hasOwnDeamon": false,
+  "maxDependancyInstallTime": 0,
+  "maxDependancyInstallTimeUnit": "",
+  "maxDeamonInstallTime": 0,
+  "maxDeamonInstallTimeUnit": ""
+}
